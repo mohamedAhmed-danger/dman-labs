@@ -1,0 +1,63 @@
+# ── Python ─────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environments ────────────────────────────────────────────────────
+myenv/
+venv/
+.venv/
+env/
+
+# ── Environment / secrets ───────────────────────────────────────────────────
+.env
+*.env
+.env.*
+!.env.example
+
+# ── Google OAuth tokens & credentials ───────────────────────────────────────
+token.json
+credentials.json
+
+# ── Logs ────────────────────────────────────────────────────────────────────
+logs/
+*.log
+
+# ── Prescription & upload files ─────────────────────────────────────────────
+static/uploads/
+uploads/
+
+# ── WAHA / WhatsApp session folders ─────────────────────────────────────────
+waha_sessions1/
+waha_sessions*/
+.sessions/
+
+# ── Database dumps / migrations (not committed on first push) ────────────────
+*.sql
+*.dump
+migrations/
+
+# ── Test cache ───────────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── IDE / OS ─────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.DS_Store
+Thumbs.db
+
+# ── Scratch / temp files in the repo root ────────────────────────────────────
+scratch/
+files.zip
+*.xlsx
+*.pdf
+قائمة*.pdf

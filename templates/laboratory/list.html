@@ -1,0 +1,296 @@
+{% extends "base.html" %}
+
+{% block title %}إدارة المعامل والفروع — معامل ضمان{% endblock %}
+
+{% block topbar_title %}إدارة المناطق والفروع{% endblock %}
+{% block topbar_sub %}إدارة التوزيع الجغرافي للمناطق وفروع معامل ضمان{% endblock %}
+
+{% block topbar_actions %}
+<div class="topbar-actions-wrap">
+  <button type="button" class="btn btn-outline" id="openManageCitiesModalBtn">
+    <i data-lucide="map-pin"></i>
+    إدارة المناطق
+  </button>
+  <button type="button" class="btn btn-primary" id="openAddBranchModalBtn">
+    <i data-lucide="plus-circle"></i>
+    + إضافة فرع جديد
+  </button>
+</div>
+{% endblock %}
+
+{% block content %}
+
+<!-- ── ZONE CARDS GRID (One Card Per City) ─────────────────── -->
+<div class="zone-cards-grid">
+  {% for item in cities_data %}
+  {% set city = item.city %}
+  {% set branches = item.branches %}
+  {% set test_count = item.test_count %}
+
+  <div class="zone-card card">
+    <div class="zone-card-header">
+      <div class="zone-info">
+        <div class="zone-icon"><i data-lucide="map-pin"></i></div>
+        <div>
+          <h3 class="zone-title">{{ city.name }}</h3>
+          <div class="zone-badges mt-1">
+            <span class="badge badge-info"><i data-lucide="flask-conical" style="width:11px;height:11px;"></i> {{ test_count }} تحليل</span>
+            <span class="badge badge-purple"><i data-lucide="building-2" style="width:11px;height:11px;"></i> {{ branches|length }} فرع</span>
+          </div>
+        </div>
+      </div>
+      <div class="zone-actions">
+        <button type="button" class="btn btn-ghost btn-sm" onclick="editCityModal({{ city.id }}, '{{ city.name }}', {{ city.sort_order }})" title="تعديل اسم المنطقة">
+          <i data-lucide="edit-2"></i>
+        </button>
+        <button type="button" class="btn btn-ghost btn-sm text-danger" onclick="deleteCityModal({{ city.id }}, '{{ city.name }}')" title="حذف المنطقة">
+          <i data-lucide="trash-2"></i>
+        </button>
+      </div>
+    </div>
+
+    <!-- Branch List under City -->
+    <div class="zone-card-body">
+      {% if branches %}
+      <div class="branch-list">
+        {% for branch in branches %}
+        <div class="branch-item">
+          <div class="branch-main">
+            <div class="branch-icon"><i data-lucide="building"></i></div>
+            <div>
+              <div class="branch-name">{{ branch.name }}</div>
+              {% if branch.address %}
+              <div class="branch-sub"><i data-lucide="map-pin" style="width:12px;height:12px;"></i> {{ branch.address }}</div>
+              {% endif %}
+              {% if branch.working_hours %}
+              <div class="branch-sub"><i data-lucide="clock" style="width:12px;height:12px;"></i> {{ branch.working_hours }}</div>
+              {% endif %}
+            </div>
+          </div>
+          <div class="branch-actions">
+            <button type="button" class="btn btn-outline btn-sm" onclick="editBranchModal({{ branch.id }}, {{ branch.city_id }}, '{{ branch.name }}', '{{ branch.address or '' }}', '{{ branch.working_hours or '' }}')">
+              <i data-lucide="edit-2"></i>
+            </button>
+            <button type="button" class="btn btn-outline btn-sm text-danger" onclick="deleteBranchModal({{ branch.id }}, '{{ branch.name }}')">
+              <i data-lucide="trash-2"></i>
+            </button>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="branch-empty-state">
+        <div class="empty-icon-sm"><i data-lucide="building"></i></div>
+        <div class="empty-text">لا توجد فروع مسجلة لهذه المنطقة بعد</div>
+        <button type="button" class="btn btn-ghost btn-sm mt-2" onclick="openAddBranchForCity({{ city.id }})">
+          <i data-lucide="plus"></i> إضافة فرع لهذه المنطقة
+        </button>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+  {% else %}
+  <div class="card p-5 text-center" style="grid-column: 1 / -1;">
+    <div class="ts-empty-icon"><i data-lucide="map-pin"></i></div>
+    <h4>لا توجد مناطق جغرافية مضافة</h4>
+    <p class="text-muted">ابدأ بإضافة المناطق والجغرافيا التابعة للمعمل.</p>
+    <button type="button" class="btn btn-primary" onclick="document.getElementById('openManageCitiesModalBtn').click()">
+      + إضافة منطقة جديدة
+    </button>
+  </div>
+  {% endfor %}
+</div>
+
+<!-- ── MANAGE CITIES MODAL ──────────────────────────────────── -->
+<div class="modal-overlay" id="manageCitiesModal">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3 class="modal-title"><i data-lucide="map-pin"></i> إدارة المناطق والجغرافيا</h3>
+      <button type="button" class="modal-close-btn" onclick="closeModal('manageCitiesModal')">&times;</button>
+    </div>
+    <div class="modal-body">
+
+      <!-- Add New City Form -->
+      <form action="{{ url_for('city.create_city') }}" method="POST" class="mb-4 pb-3 border-bottom">
+        <input type="hidden" name="laboratory_id" value="{{ current_lab.id if current_lab else 1 }}">
+        <label class="field-label">إضافة منطقة جديدة</label>
+        <div style="display: flex; gap: 10px;">
+          <input type="text" name="name" class="form-control" placeholder="اسم المنطقة (مثال: القاهرة، الإسماعيلية...)" required>
+          <input type="number" name="sort_order" class="form-control" placeholder="الترتيب" value="0" style="width: 90px;">
+          <button type="submit" class="btn btn-primary" style="white-space: nowrap;">إضافة</button>
+        </div>
+      </form>
+
+      <!-- Existing Cities List -->
+      <h4 class="section-title mb-2">المناطق المتاحة</h4>
+      <div class="cities-manage-list">
+        {% for item in cities_data %}
+        <div class="city-manage-row">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <i data-lucide="grip-vertical" class="drag-handle"></i>
+            <span class="city-name-text">{{ item.city.name }}</span>
+            <span class="badge badge-info">{{ item.test_count }} تحليل</span>
+            <span class="badge badge-purple">{{ item.branches|length }} فرع</span>
+          </div>
+          <div style="display: flex; gap: 6px;">
+            <button type="button" class="btn btn-ghost btn-sm" onclick="editCityModal({{ item.city.id }}, '{{ item.city.name }}', {{ item.city.sort_order }})">تعديل</button>
+            <button type="button" class="btn btn-ghost btn-sm text-danger" onclick="deleteCityModal({{ item.city.id }}, '{{ item.city.name }}')">حذف</button>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── ADD / EDIT CITY MODAL ────────────────────────────────── -->
+<div class="modal-overlay" id="editCityModal">
+  <div class="modal-card modal-sm">
+    <div class="modal-header">
+      <h3 class="modal-title" id="editCityModalTitle">تعديل المنطقة</h3>
+      <button type="button" class="modal-close-btn" onclick="closeModal('editCityModal')">&times;</button>
+    </div>
+    <form id="editCityForm" method="POST">
+      <div class="modal-body">
+        <input type="hidden" name="laboratory_id" value="{{ current_lab.id if current_lab else 1 }}">
+        <div class="form-group mb-3">
+          <label class="field-label">اسم المنطقة <span class="required-star">*</span></label>
+          <input type="text" name="name" id="editCityNameInput" class="form-control" required>
+        </div>
+        <div class="form-group mb-3">
+          <label class="field-label">ترتيب العرض</label>
+          <input type="number" name="sort_order" id="editCitySortInput" class="form-control" value="0">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost" onclick="closeModal('editCityModal')">إلغاء</button>
+        <button type="submit" class="btn btn-primary">حفظ التغييرات</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ── ADD / EDIT BRANCH MODAL ──────────────────────────────── -->
+<div class="modal-overlay" id="branchModal">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3 class="modal-title" id="branchModalTitle">إضافة فرع جديد</h3>
+      <button type="button" class="modal-close-btn" onclick="closeModal('branchModal')">&times;</button>
+    </div>
+    <form id="branchForm" method="POST" action="{{ url_for('branch.create_branch') }}">
+      <div class="modal-body">
+        <input type="hidden" name="laboratory_id" value="{{ current_lab.id if current_lab else 1 }}">
+        <div class="form-group mb-3">
+          <label class="field-label">المنطقة الجغرافية <span class="required-star">*</span></label>
+          <select name="city_id" id="branchCitySelect" class="form-control" required>
+            <option value="">اختر المنطقة...</option>
+            {% for item in cities_data %}
+            <option value="{{ item.city.id }}">{{ item.city.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group mb-3">
+          <label class="field-label">اسم الفرع <span class="required-star">*</span></label>
+          <input type="text" name="name" id="branchNameInput" class="form-control" placeholder="مثال: فرع مدينة نصر، فرع الشارع الرئيسي..." required>
+        </div>
+        <div class="form-group mb-3">
+          <label class="field-label">العنوان التفصيلي</label>
+          <input type="text" name="address" id="branchAddressInput" class="form-control" placeholder="العنوان أو الشارع...">
+        </div>
+        <div class="form-group mb-3">
+          <label class="field-label">مواعيد العمل</label>
+          <input type="text" name="working_hours" id="branchHoursInput" class="form-control" placeholder="مثال: يومياً من 8 ص إلى 11 م">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost" onclick="closeModal('branchModal')">إلغاء</button>
+        <button type="submit" class="btn btn-primary" id="branchSubmitBtn">حفظ الفرع</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+function closeModal(id) {
+  const m = document.getElementById(id);
+  if (m) m.style.display = 'none';
+}
+
+document.getElementById('openManageCitiesModalBtn')?.addEventListener('click', () => {
+  document.getElementById('manageCitiesModal').style.display = 'flex';
+});
+
+document.getElementById('openAddBranchModalBtn')?.addEventListener('click', () => {
+  document.getElementById('branchModalTitle').innerText = 'إضافة فرع جديد';
+  document.getElementById('branchForm').action = "{{ url_for('branch.create_branch') }}";
+  document.getElementById('branchNameInput').value = '';
+  document.getElementById('branchAddressInput').value = '';
+  document.getElementById('branchHoursInput').value = '';
+  document.getElementById('branchModal').style.display = 'flex';
+});
+
+function openAddBranchForCity(cityId) {
+  document.getElementById('openAddBranchModalBtn').click();
+  document.getElementById('branchCitySelect').value = cityId;
+}
+
+function editCityModal(id, name, sortOrder) {
+  closeModal('manageCitiesModal');
+  document.getElementById('editCityForm').action = `/cities/${id}/edit`;
+  document.getElementById('editCityNameInput').value = name;
+  document.getElementById('editCitySortInput').value = sortOrder;
+  document.getElementById('editCityModal').style.display = 'flex';
+}
+
+function editBranchModal(id, cityId, name, address, hours) {
+  document.getElementById('branchModalTitle').innerText = 'تعديل بيانات الفرع';
+  document.getElementById('branchForm').action = `/branches/${id}/edit`;
+  document.getElementById('branchCitySelect').value = cityId;
+  document.getElementById('branchNameInput').value = name;
+  document.getElementById('branchAddressInput').value = address;
+  document.getElementById('branchHoursInput').value = hours;
+  document.getElementById('branchModal').style.display = 'flex';
+}
+
+async function deleteCityModal(cityId, cityName) {
+  if (!confirm(`هل أنت تأكد من حذف المنطقة "${cityName}"؟`)) return;
+  try {
+    const resp = await fetch(`/cities/${cityId}/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ laboratory_id: {{ current_lab.id if current_lab else 1 }} })
+    });
+    const data = await resp.json();
+    if (resp.ok && data.success) {
+      alert(data.message);
+      window.location.reload();
+    } else {
+      alert(data.error || 'فشل حذف المنطقة');
+    }
+  } catch (err) {
+    alert('حدث خطأ أثناء التواصل مع الخادم');
+  }
+}
+
+async function deleteBranchModal(branchId, branchName) {
+  if (!confirm(`هل أنت تأكد من حذف الفرع "${branchName}"؟`)) return;
+  try {
+    const resp = await fetch(`/branches/${branchId}/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ laboratory_id: {{ current_lab.id if current_lab else 1 }} })
+    });
+    const data = await resp.json();
+    if (resp.ok && data.success) {
+      alert(data.message);
+      window.location.reload();
+    } else {
+      alert(data.error || 'فشل حذف الفرع');
+    }
+  } catch (err) {
+    alert('حدث خطأ أثناء التواصل مع الخادم');
+  }
+}
+</script>
+
+{% endblock %}

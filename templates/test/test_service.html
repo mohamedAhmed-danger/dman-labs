@@ -1,0 +1,427 @@
+{% extends "base.html" %}
+
+{% block title %}خدمات التحاليل الطبية — معامل ضمان{% endblock %}
+
+{% block topbar_title %}خدمات التحاليل الطبية{% endblock %}
+{% block topbar_sub %}إدارة وتحديث فحوصات التحاليل الطبية والأسعار لكل منطقة{% endblock %}
+
+{% block topbar_actions %}
+<div class="topbar-actions-wrap">
+  <button type="button" class="btn btn-outline" id="exportPricesBtn">
+    <i data-lucide="download"></i>
+    تصدير أسعار المنطقة
+  </button>
+  <button type="button" class="btn btn-primary" id="openImportModalBtn">
+    <i data-lucide="upload"></i>
+    استيراد أسعار
+  </button>
+  <a href="{{ url_for('test.create_test', city_id=selected_city_id) }}" class="btn btn-primary">
+    <i data-lucide="plus-circle"></i>
+    + إضافة تحليل جديد
+  </a>
+</div>
+{% endblock %}
+
+{% block content %}
+
+<!-- ── Region Pills (City Filter Tabs) ─────────────────────── -->
+<div class="ts-region-pills-bar">
+  <div class="ts-region-pills">
+    <a href="{{ url_for('test.test_service', city_id='all', search=search, per_page=per_page) }}"
+       class="ts-pill {% if not selected_city_id %}active{% endif %}">
+      <i data-lucide="layers"></i>
+      الكل
+    </a>
+    {% for city in cities %}
+    <a href="{{ url_for('test.test_service', city_id=city.id, search=search, per_page=per_page) }}"
+       class="ts-pill {% if selected_city_id == city.id %}active{% endif %}">
+      <i data-lucide="map-pin"></i>
+      {{ city.name }}
+    </a>
+    {% endfor %}
+  </div>
+
+  {% if pending_count and pending_count > 0 %}
+  <button type="button" class="btn btn-warning btn-sm ts-pending-retry-btn" id="retryPendingBtn">
+    <i data-lucide="refresh-cw"></i>
+    إعادة محاولة المعلّق ({{ pending_count }})
+  </button>
+  {% endif %}
+</div>
+
+<!-- ── Quick Stats Strip ───────────────────────────────────── -->
+<div class="ts-stats-strip">
+  <div class="ts-stat-pill">
+    <div class="ts-stat-pill-icon si-purple"><i data-lucide="flask-conical"></i></div>
+    <div>
+      <div class="ts-stat-pill-value">{{ pagination.total if pagination else (services|length) }}</div>
+      <div class="ts-stat-pill-label">إجمالي التحاليل</div>
+    </div>
+  </div>
+
+  <div class="ts-stat-pill">
+    <div class="ts-stat-pill-icon si-blue"><i data-lucide="map-pin"></i></div>
+    <div>
+      <div class="ts-stat-pill-value">
+        {% if selected_city_id %}
+          {% for c in cities %}{% if c.id == selected_city_id %}{{ c.name }}{% endif %}{% endfor %}
+        {% else %}
+          جميع المناطق
+        {% endif %}
+      </div>
+      <div class="ts-stat-pill-label">المنطقة المحددة</div>
+    </div>
+  </div>
+
+  {% if pending_count and pending_count > 0 %}
+  <div class="ts-stat-pill">
+    <div class="ts-stat-pill-icon si-amber"><i data-lucide="clock"></i></div>
+    <div>
+      <div class="ts-stat-pill-value">{{ pending_count }}</div>
+      <div class="ts-stat-pill-label">قيد الفهرسة / المعالجة</div>
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+<!-- ── Search & Filter Bar ─────────────────────────────────── -->
+<div class="card ts-filter-card">
+  <form method="GET" action="{{ url_for('test.test_service') }}" class="ts-filter-form">
+    {% if selected_city_id %}
+    <input type="hidden" name="city_id" value="{{ selected_city_id }}">
+    {% else %}
+    <input type="hidden" name="city_id" value="all">
+    {% endif %}
+
+    <div class="ts-filter-field ts-filter-search">
+      <label class="ts-filter-label">بحث عن تحليل</label>
+      <div class="ts-input-icon-wrap">
+        <i data-lucide="search" class="ts-input-icon"></i>
+        <input
+          type="text"
+          name="search"
+          value="{{ search or '' }}"
+          placeholder="ابحث باسم التحليل (مثال: صورة دم كاملة، CBC، وظائف كلى)..."
+          class="form-control ts-input-with-icon">
+      </div>
+    </div>
+
+    <div class="ts-filter-field">
+      <label class="ts-filter-label">حالة الفهرسة</label>
+      <select name="sync_status" class="form-control">
+        <option value="">جميع الحالات</option>
+        <option value="ok" {% if sync_status == 'ok' %}selected{% endif %}>مكتمل (OK)</option>
+        <option value="pending" {% if sync_status == 'pending' %}selected{% endif %}>معلّق (Pending)</option>
+      </select>
+    </div>
+
+    <div class="ts-filter-field ts-filter-narrow">
+      <label class="ts-filter-label">عرض بالصفحة</label>
+      <select name="per_page" class="form-control">
+        <option value="10" {% if per_page == 10 %}selected{% endif %}>10</option>
+        <option value="20" {% if per_page == 20 %}selected{% endif %}>20</option>
+        <option value="50" {% if per_page == 50 %}selected{% endif %}>50</option>
+      </select>
+    </div>
+
+    <div class="ts-filter-actions">
+      <button type="submit" class="btn btn-primary ts-filter-btn">
+        <i data-lucide="filter"></i>
+        تصفية
+      </button>
+      {% if search or sync_status %}
+      <a href="{{ url_for('test.test_service', city_id=selected_city_id or 'all') }}" class="btn btn-ghost ts-filter-btn ts-filter-reset" title="إعادة تعيين البحث">
+        <i data-lucide="rotate-ccw"></i>
+      </a>
+      {% endif %}
+    </div>
+  </form>
+</div>
+
+<!-- ── Laboratory Services Table ───────────────────────────── -->
+<div class="table-wrap ts-table-wrap">
+  <table class="data-table ts-data-table">
+    <thead>
+      <tr>
+        <th style="width: 60px;">#</th>
+        <th>اسم التحليل</th>
+        {% if not selected_city_id %}
+        <th>المنطقة</th>
+        {% endif %}
+        <th>السعر</th>
+        <th>نوع العينة</th>
+        <th>المدة المتوقعة</th>
+        <th style="width: 170px; text-align: center;">الإجراءات</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for service in services %}
+      <tr>
+        <td><span class="ts-id-chip">#{{ service.id }}</span></td>
+        <td>
+          <div class="ts-test-name-cell">
+            <div class="ts-test-avatar"><i data-lucide="test-tube-diagonal"></i></div>
+            <div>
+              <div class="ts-test-name-text">{{ service.name }}</div>
+              {% if service.sync_status == 'pending' %}
+              <span class="badge badge-warning ts-pending-badge" title="جاري توليد البيانات أو تحديث المتجهات بالخلفية">
+                <i data-lucide="clock" style="width:11px;height:11px;"></i> قيد المعالجة
+              </span>
+              {% endif %}
+            </div>
+          </div>
+        </td>
+        {% if not selected_city_id %}
+        <td>
+          <span class="ts-lab-tag">
+            <i data-lucide="map-pin"></i>
+            {{ service.city.name if service.city else '—' }}
+          </span>
+        </td>
+        {% endif %}
+        <td>
+          <span class="ts-price-badge">
+            {{ '%.2f'|format(service.price) if service.price else '0.00' }} <span class="ts-price-currency">ج.م</span>
+          </span>
+        </td>
+        <td>
+          {% if service.sample_type %}
+          <span class="ts-sample-tag">
+            <i data-lucide="droplet"></i>
+            {{ service.sample_type }}
+          </span>
+          {% else %}
+          <span class="ts-muted-dash">—</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if service.duration %}
+          <span class="status-chip new" style="display: inline-flex; align-items: center; gap: 4px;">
+            <i data-lucide="clock" style="width: 13px; height: 13px;"></i>
+            {{ service.duration }} ساعة
+          </span>
+          {% else %}
+          <span class="ts-muted-dash">—</span>
+          {% endif %}
+        </td>
+        <td style="text-align: center;">
+          <div class="ts-row-actions">
+            <a href="{{ url_for('test.edit_test', test_id=service.id) }}"
+               class="btn btn-outline btn-sm ts-action-btn"
+               title="تعديل بيانات التحليل">
+              <i data-lucide="edit-2"></i>
+              تعديل
+            </a>
+
+            <form action="{{ url_for('test.delete_test', test_id=service.id) }}" method="POST" style="display: inline; margin: 0;">
+              <button type="button" class="btn btn-outline btn-sm ts-action-btn ts-action-danger" onclick="confirmDelete(this.form)" title="حذف التحليل">
+                <i data-lucide="trash-2"></i>
+                حذف
+              </button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% else %}
+      <tr>
+        <td colspan="7" style="text-align: center; padding: 56px 20px;">
+          <div class="ts-empty-icon"><i data-lucide="flask-conical"></i></div>
+          <h4 style="font-size: 1.05rem; margin-bottom: 6px;">لا توجد تحاليل طبية مسجلة لهذه المنطقة</h4>
+          <p style="color: var(--ink-500); font-size: 0.85rem; margin-bottom: 18px;">
+            {% if search %}
+            لم يتم العثور على أي نتائج تطابق البحث "{{ search }}".
+            {% else %}
+            ابدأ بإضافة تحاليل جديدة أو استيراد قائمة الأسعار لهذه المنطقة.
+            {% endif %}
+          </p>
+          {% if search %}
+          <a href="{{ url_for('test.test_service', city_id=selected_city_id or 'all') }}" class="btn btn-outline">إلغاء التصفية</a>
+          {% else %}
+          <a href="{{ url_for('test.create_test', city_id=selected_city_id) }}" class="btn btn-primary">
+            <i data-lucide="plus-circle"></i>
+            + إضافة تحليل جديد
+          </a>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<!-- ── Pagination ─────────────────────────────────────────── -->
+{% if pagination and pagination.pages > 1 %}
+<div class="pagination-wrapper">
+  <div class="pagination-info">
+    عرض {{ (pagination.page - 1) * pagination.per_page + 1 }} إلى {{ [pagination.page * pagination.per_page, pagination.total]|min }} من إجمالي {{ pagination.total }} تحليل
+  </div>
+
+  <nav class="pagination">
+    {% if pagination.has_prev %}
+    <a href="{{ url_for('test.test_service', page=pagination.prev_num, per_page=per_page, search=search, city_id=selected_city_id or 'all', sync_status=sync_status) }}"
+       class="pagination-btn">
+      <i data-lucide="chevron-right"></i> السابق
+    </a>
+    {% else %}
+    <span class="pagination-btn disabled"><i data-lucide="chevron-right"></i> السابق</span>
+    {% endif %}
+
+    {% for p in pagination.iter_pages(left_edge=1, right_edge=1, left_current=2, right_current=2) %}
+      {% if p %}
+        {% if p == pagination.page %}
+        <span class="pagination-page active">{{ p }}</span>
+        {% else %}
+        <a href="{{ url_for('test.test_service', page=p, per_page=per_page, search=search, city_id=selected_city_id or 'all', sync_status=sync_status) }}"
+           class="pagination-page">{{ p }}</a>
+        {% endif %}
+      {% else %}
+        <span class="pagination-ellipsis">…</span>
+      {% endif %}
+    {% endfor %}
+
+    {% if pagination.has_next %}
+    <a href="{{ url_for('test.test_service', page=pagination.next_num, per_page=per_page, search=search, city_id=selected_city_id or 'all', sync_status=sync_status) }}"
+       class="pagination-btn">
+      التالي <i data-lucide="chevron-left"></i>
+    </a>
+    {% else %}
+    <span class="pagination-btn disabled">التالي <i data-lucide="chevron-left"></i></span>
+    {% endif %}
+  </nav>
+</div>
+{% endif %}
+
+<!-- ── 3-STEP IMPORT MODAL ──────────────────────────────────── -->
+<div class="modal-overlay" id="importModal">
+  <div class="modal-card modal-lg">
+    <div class="modal-header">
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <div class="section-icon"><i data-lucide="upload-cloud"></i></div>
+        <div>
+          <h3 class="modal-title">استيراد أسعار التحاليل من ملف Excel / PDF</h3>
+          <p class="modal-subtitle">قم بتحديث أسعار أو إضافة فحوصات جديدة للمنطقة الحالية</p>
+        </div>
+      </div>
+      <button type="button" class="modal-close-btn" id="closeImportModalBtn">&times;</button>
+    </div>
+
+    <!-- Modal Step Indicator -->
+    <div class="import-steps-bar">
+      <div class="import-step active" id="stepIndicator1">
+        <span class="step-num">١</span> رفع الملف والخيارات
+      </div>
+      <div class="import-step-arrow"><i data-lucide="chevron-left"></i></div>
+      <div class="import-step" id="stepIndicator2">
+        <span class="step-num">٢</span> المعاينة والتأكيد
+      </div>
+      <div class="import-step-arrow"><i data-lucide="chevron-left"></i></div>
+      <div class="import-step" id="stepIndicator3">
+        <span class="step-num">٣</span> التنفيذ والمعالجة
+      </div>
+    </div>
+
+    <!-- STEP 1: UPLOAD & OPTIONS -->
+    <div class="import-modal-body" id="importStep1">
+      <form id="importPreviewForm">
+        <div class="form-group mb-3">
+          <label class="field-label">المنطقة المستهدفة <span class="required-star">*</span></label>
+          <select name="city_id" id="importCitySelect" class="form-control" required>
+            {% for city in cities %}
+            <option value="{{ city.id }}" {% if selected_city_id == city.id %}selected{% endif %}>{{ city.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="form-group mb-3">
+          <label class="field-label">اختر ملف الأسعار (.xlsx, .csv) <span class="required-star">*</span></label>
+          <input type="file" name="file" id="importFileInput" class="form-control" accept=".xlsx, .xls, .csv" required>
+        </div>
+
+        <div class="import-options-box">
+          <label class="checkbox-label mb-2">
+            <input type="checkbox" name="generate_ai" id="importGenerateAiCheck" checked>
+            <span>توليد بيانات الذكاء الاصطناعي للفحوصات الجديدة بالخلفية (Description, Keywords, Patient Instructions)</span>
+          </label>
+          <label class="checkbox-label text-danger">
+            <input type="checkbox" name="delete_missing" id="importDeleteMissingCheck">
+            <span>حذف التحاليل التابعة للمنطقة وغير الموجودة بالملف (Delete Missing Tests)</span>
+          </label>
+        </div>
+
+        <div id="importStep1Error" class="alert alert-error mt-3" style="display:none;"></div>
+      </form>
+    </div>
+
+    <!-- STEP 2: PREVIEW COUNTERS & CONFIRMATION -->
+    <div class="import-modal-body" id="importStep2" style="display:none;">
+      <div class="import-counters-grid mb-3">
+        <div class="import-counter-card ic-created">
+          <div class="ic-num" id="cntCreated">0</div>
+          <div class="ic-lbl">تحاليل جديدة</div>
+        </div>
+        <div class="import-counter-card ic-updated">
+          <div class="ic-num" id="cntUpdated">0</div>
+          <div class="ic-lbl">أسعار محدّثة</div>
+        </div>
+        <div class="import-counter-card ic-unchanged">
+          <div class="ic-num" id="cntUnchanged">0</div>
+          <div class="ic-lbl">بدون تغيير</div>
+        </div>
+        <div class="import-counter-card ic-skipped">
+          <div class="ic-num" id="cntSkipped">0</div>
+          <div class="ic-lbl">تم تخطيها / مراجعة</div>
+        </div>
+      </div>
+
+      <!-- Delete Missing Warning Box -->
+      <div class="alert alert-danger" id="wouldDeleteBox" style="display:none;">
+        <div style="font-weight: 700; margin-bottom: 4px;">
+          <i data-lucide="alert-triangle"></i> تنبيه: سيتم حذف <span id="wouldDeleteCount">0</span> تحليل من هذه المنطقة!
+        </div>
+        <div style="font-size: 0.85rem;" id="wouldDeleteNames"></div>
+      </div>
+
+      <!-- Needs Review Accordion -->
+      <div class="import-review-box mt-3" id="needsReviewBox" style="display:none;">
+        <div class="import-review-header" onclick="toggleReviewList()">
+          <span><i data-lucide="alert-circle"></i> صفوف تحتاج للمراجعة (<span id="cntNeedsReview">0</span>)</span>
+          <i data-lucide="chevron-down" id="reviewChevron"></i>
+        </div>
+        <div class="import-review-list" id="needsReviewList" style="display:none;"></div>
+      </div>
+
+      <div id="importStep2Error" class="alert alert-error mt-3" style="display:none;"></div>
+    </div>
+
+    <!-- STEP 3: PROGRESS & FINISH -->
+    <div class="import-modal-body" id="importStep3" style="display:none;">
+      <div class="progress-wrap mb-3">
+        <div class="progress-bar-bg">
+          <div class="progress-bar-fill" id="importProgressBar" style="width: 0%;"></div>
+        </div>
+        <div class="progress-status-text mt-2" id="importProgressText">جاري المعالجة... 0%</div>
+      </div>
+
+      <div class="import-live-stats" id="importLiveStats">
+        <span class="badge badge-success">تم: <strong id="statDone">0</strong></span>
+        <span class="badge badge-danger">فشل: <strong id="statFailed">0</strong></span>
+        <span class="badge badge-warning">معلّق: <strong id="statPending">0</strong></span>
+        <span class="badge badge-info">الإجمالي: <strong id="statTotal">0</strong></span>
+      </div>
+
+      <div id="importFinalAlert" class="alert alert-success mt-3" style="display:none;">
+        تم استيراد قائمة الأسعار ومعالجة الفحوصات بنجاح!
+      </div>
+    </div>
+
+    <!-- Modal Footer Actions -->
+    <div class="modal-footer">
+      <button type="button" class="btn btn-ghost" id="importBackBtn" style="display:none;">رجوع</button>
+      <button type="button" class="btn btn-primary" id="importNextBtn">معاينة الملف</button>
+      <button type="button" class="btn btn-success" id="importCommitBtn" style="display:none;">تأكيد وتنفيذ الاستيراد</button>
+      <button type="button" class="btn btn-outline" id="importCloseDoneBtn" style="display:none;">إغلاق</button>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
