@@ -32,7 +32,9 @@ def enqueue_message(
     platform_name: str,
     text: str,
     received_at: float | None = None,
-    image_result:dict | None = None,
+    image_result: dict | None = None,
+    sender_name: str | None = None,
+    sender_phone: str | None = None,
 ) -> None:
     """
     Enqueues an incoming agent_text payload into the Redis-backed conversation queue.
@@ -48,6 +50,8 @@ def enqueue_message(
         "text": text,
         "image": image_result,
         "received_at": received_at if received_at is not None else time.time(),
+        "sender_name": sender_name,
+        "sender_phone": sender_phone,
     }
 
     due_at = time.time() + DEBOUNCE_SECONDS

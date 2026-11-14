@@ -26,12 +26,30 @@ def save_visit_tool(
     date: str,
     time: str,
     comes_from: str = "WhatsApp",
+    city_id: int | None = None,
+    page_id: str | None = None,
+    platform_id: int | None = None,
+    sender_id: str | None = None,
 ) -> SaveVisitResult:
     """Saves a confirmed home visit medical laboratory booking."""
 
     try:
+        if not city_id:
+            return SaveVisitResult(
+                success=False,
+                message="A validated client region is required before saving a booking.",
+            )
+
         # 1. Save booking
         booking_service = BookingService()
+        identity = None
+        try:
+            from utils.contact_resolver import resolve_user_identity
+
+            identity = resolve_user_identity(page_id, platform_id, sender_id, fallback_name=name)
+        except Exception:
+            logger.exception("[VISIT TOOL] Could not resolve user identity")
+            identity = name or sender_id
 
         result = booking_service.save_booking(
             name=name,
@@ -41,6 +59,8 @@ def save_visit_tool(
             comes_from=comes_from,
             time=time,
             address=address,
+            city_id=city_id,
+            user_identity=identity,
         )
 
         # 2. Make sure booking was saved successfully

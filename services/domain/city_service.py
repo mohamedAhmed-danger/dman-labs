@@ -24,7 +24,7 @@ class CityService:
                 self.laboratory_id = self._city.laboratory_id
         return self._city
 
-    def create_city(self, laboratory_id: int = None, name: str = None, sort_order: int = 0):
+    def create_city(self, laboratory_id: int = None, name: str = None, sort_order: int = 0, aliases=None):
         lab_id = laboratory_id or self.laboratory_id
         try:
             name = (name or "").strip()
@@ -41,6 +41,7 @@ class CityService:
                 laboratory_id=lab_id,
                 name=name,
                 sort_order=int(sort_order or 0),
+                aliases=self._normalize_aliases(aliases),
             )
             db.session.add(new_city)
             # flush to get the auto-generated city id WITHOUT committing yet
@@ -105,7 +106,8 @@ class CityService:
             logger.exception("Failed to fetch cities for laboratory %s: %s", laboratory_id, e)
             return []
 
-    def update_city(self, city_id: int = None, name: str = None, sort_order: int = None, laboratory_id: int = None):
+    def update_city(self, city_id: int = None, name: str = None, sort_order: int = None,
+                    laboratory_id: int = None, aliases=None):
         target_id = city_id or self.city_id
         lab_id = laboratory_id or self.laboratory_id
 
@@ -130,6 +132,8 @@ class CityService:
 
             if sort_order is not None:
                 city.sort_order = int(sort_order)
+            if aliases is not None:
+                city.aliases = self._normalize_aliases(aliases)
 
             db.session.commit()
             self._city = city
@@ -143,17 +147,48 @@ class CityService:
             return None, "حدث خطأ أثناء تحديث المنطقة"
 
     @staticmethod
+    def _normalize_aliases(aliases):
+        if isinstance(aliases, str):
+            aliases = aliases.split(",")
+        if not aliases:
+            return []
+        return list(dict.fromkeys(
+            item.strip() for item in aliases
+            if isinstance(item, str) and item.strip()
+        ))
+
+    @staticmethod
     def reorder_cities(laboratory_id: int, city_orders: list[tuple[int, int]]):
         if not laboratory_id or not city_orders:
             return False, "بيانات الترتيب غير صحيحة"
 
         try:
-            for city_id, order in city_orders:
-                city = City.query.filter_by(id=city_id, laboratory_id=laboratory_id).first()
-                if city:
-                    city.sort_order = int(order)
+            normalized_orders = []
+            seen_city_ids = set()
+            for entry in city_orders:
+                if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+                    return False, "بيانات الترتيب غير صحيحة"
+                city_id, order = (int(value) for value in entry)
+                if city_id <= 0 or order < 0 or city_id in seen_city_ids:
+                    return False, "بيانات الترتيب غير صحيحة"
+                seen_city_ids.add(city_id)
+                normalized_orders.append((city_id, order))
+
+            cities = City.query.filter(
+                City.id.in_(seen_city_ids),
+                City.laboratory_id == laboratory_id,
+            ).all()
+            if len(cities) != len(normalized_orders):
+                return False, "منطقة واحدة أو أكثر غير موجودة لهذا المعمل"
+
+            city_by_id = {city.id: city for city in cities}
+            for city_id, order in normalized_orders:
+                city_by_id[city_id].sort_order = order
             db.session.commit()
             return True, "تم إعادة ترتيب المناطق بنجاح"
+        except (TypeError, ValueError):
+            db.session.rollback()
+            return False, "بيانات الترتيب غير صحيحة"
         except Exception as e:
             db.session.rollback()
             logger.exception("Failed to reorder cities for lab %s: %s", laboratory_id, e)

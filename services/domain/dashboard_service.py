@@ -62,7 +62,10 @@ class DashboardService:
             "clients_count": _safe("clients count", ClientService.get_total_clients_count),
             "booking_stats": {"total": _safe("bookings count", BookingService.get_total_bookings_count)},
             "pending_inquiries_count": _safe("pending inquiries count", InquiryService.get_pending_inquiries_count),
-            "tests_count": _safe("tests count", TestsService.get_total_tests_count),
+            "tests_count": _safe(
+                "tests count",
+                lambda: TestsService.get_total_tests_count(laboratory_id=lab_id) if lab_id else 0,
+            ),
             "cities_breakdown": [],
         }
 

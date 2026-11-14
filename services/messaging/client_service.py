@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timezone
 from sqlalchemy.exc import IntegrityError
-from models.models import db, Client
+from models.models import db, Client, City, Page
 from utils.trace_logger import trace_logger
 
 logger = logging.getLogger(__name__)
@@ -99,6 +99,32 @@ class ClientService:
         self.page_id = resolved_page_id
         self.sender_id = resolved_sender_id
         return client
+
+    def get_city_id(self) -> int | None:
+        """Return the client's selected city, if one has been saved."""
+        client = self.client
+        return client.city_id if client else None
+
+    def update_city(self, city_id: int) -> City:
+        """Save a city only when it belongs to the laboratory served by this page."""
+        client = self.get_or_create_client()
+        page = Page.query.filter_by(
+            page_id=self.page_id,
+            platform_id=self.platform_id,
+        ).first()
+        city = db.session.get(City, city_id)
+        if not page:
+            raise ValueError("Client page was not found")
+        if not city or city.laboratory_id != page.laboratory_id:
+            raise ValueError("City does not belong to the client's laboratory")
+        client.city_id = city.id
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            logger.exception("[ClientService.update_city] failed")
+            raise
+        return city
 
     def save_chat_exchange(
         self,

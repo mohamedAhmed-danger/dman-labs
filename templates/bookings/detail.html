@@ -32,7 +32,14 @@
         <div class="info-icon si-green"><i data-lucide="phone"></i></div>
         <div class="info-body">
           <div class="info-label">رقم الهاتف</div>
-          <div class="info-value" style="direction: ltr; display:inline-block;">{{ booking.phone_number }}</div>
+          <div class="info-value" style="direction: ltr; display:inline-block;">{{ booking.phone_number or '-' }}</div>
+        </div>
+      </div>
+      <div class="info-item">
+        <div class="info-icon si-blue"><i data-lucide="user"></i></div>
+        <div class="info-body">
+          <div class="info-label">هوية العميل (من المنصة)</div>
+          <div class="info-value"><span dir="auto">{{ booking.user_identity or '-' }}</span></div>
         </div>
       </div>
       <div class="info-item">
@@ -48,6 +55,15 @@
           <div class="info-label">المنصة</div>
           <div class="info-value">{{ booking.comes_from or 'غير محدد' }}</div>
         </div>
+        {% if booking.city %}
+        <div class="info-item">
+          <div class="info-icon si-purple"><i data-lucide="map-pin"></i></div>
+          <div class="info-body">
+            <div class="info-label">المنطقة</div>
+            <div class="info-value">{{ booking.city.name }}</div>
+          </div>
+        </div>
+        {% endif %}
       </div>
     </div>
   </div>

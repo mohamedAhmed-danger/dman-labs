@@ -6,27 +6,17 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# أدوات البناء + مكتبات MySQL (لو بتستخدم pymysql مش هتضر)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    gcc \
-    pkg-config \
-    default-libmysqlclient-dev \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY . .
+RUN useradd -m -u 1000 appuser \
+    && mkdir -p /app/instance /app/static/uploads \
+    && chown appuser:appuser /app /app/instance /app/static /app/static/uploads
 
-RUN mkdir -p /app/instance /app/static/uploads
+COPY --chown=appuser:appuser . .
 
-# non-root user (uid 1000 عشان صلاحيات الفولدرات المتمونتة)
-RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
 EXPOSE 4500
 
-# --timeout 120 عشان الـ agent بيستنى Gemini و OCR
-CMD ["sh", "-c", "exec gunicorn -w 4 --threads 8 --timeout 120 -b 0.0.0.0:4500 --log-level info --access-logfile - --error-logfile - app:app"]
+CMD ["sh", "-c", "exec gunicorn -w 2 --threads 8 --timeout 120 -b 0.0.0.0:4500 --log-level info --access-logfile - --error-logfile - app:app"]

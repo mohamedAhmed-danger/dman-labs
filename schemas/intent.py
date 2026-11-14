@@ -53,5 +53,5 @@ class IntentResponse(BaseModel):
 
     is_bundle_query: bool = Field(
         ...,
-        description="True ONLY if the user is explicitly asking about bundles, checkup offers, or packages."
+        description="True ONLY if the user is explicitly asking about bundles or packages."
     )

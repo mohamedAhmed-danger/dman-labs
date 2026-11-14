@@ -100,7 +100,7 @@ class EmailClient:
             logger.error("[NotificationCenter] Missing email credentials or receivers in environment.")
             return False
 
-        machine_identifier = os.environ.get("SERVER_IDENTIFIER", "elbedawy-labs-agent")
+        machine_identifier = os.environ.get("SERVER_IDENTIFIER", "daman-labs-agent")
         final_body = f"[{machine_identifier}]\n\n{body}"
 
         try:
@@ -248,7 +248,7 @@ def send_visit_confirmation_email(
                 # Update saved settings with refreshed token if necessary
                 if hasattr(settings, 'gmail_token_json'):
                     settings.gmail_token_json = creds.to_json()
-                    # db.session.commit() # Save if DB model
+                    db.session.commit() # Save if DB model
             except RefreshError as refresh_err:
                 logger.error("[NotificationCenter] Refresh token expired/revoked: %s", refresh_err)
                 send_production_alert(
@@ -333,6 +333,7 @@ def send_pending_prescription_email(
                 creds.refresh(Request())
                 if hasattr(settings, 'gmail_token_json'):
                     settings.gmail_token_json = creds.to_json()
+                    db.session.commit()  # Save if DB model
             except RefreshError as refresh_err:
                 logger.error("[NotificationCenter] Refresh token expired/revoked: %s", refresh_err)
                 send_production_alert(
@@ -371,3 +372,4 @@ def send_pending_prescription_email(
             level="ERROR"
         )
         return False
+    

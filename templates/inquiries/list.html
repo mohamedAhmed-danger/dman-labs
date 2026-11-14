@@ -46,14 +46,14 @@
 <div class="card ts-filter-card">
   <form method="GET" action="{{ url_for('inquiries.list_inquiries') }}" class="ts-filter-form">
     <div class="ts-filter-field ts-filter-search">
-      <label class="ts-filter-label">بحث بالهاتف أو التحاليل</label>
+      <label class="ts-filter-label">بحث بهوية العميل (رقم الهاتف أو الاسم) أو التحاليل</label>
       <div class="ts-input-icon-wrap">
         <i data-lucide="search" class="ts-input-icon"></i>
         <input
           type="text"
           name="search"
           value="{{ search or '' }}"
-          placeholder="ابحث برقم هاتف المريض أو اسم التحليل..."
+          placeholder="ابحث بهوية العميل (رقم الهاتف أو الاسم) أو التحليل..."
           class="form-control ts-input-with-icon">
       </div>
     </div>
@@ -74,12 +74,22 @@
       </select>
     </div>
 
+    <div class="ts-filter-field">
+      <label class="ts-filter-label">المنطقة</label>
+      <select name="city_id" class="form-control">
+        <option value="">كل المناطق</option>
+        {% for city in cities %}
+        <option value="{{ city.id }}" {% if city_id == city.id %}selected{% endif %}>{{ city.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
     <div class="ts-filter-actions">
       <button type="submit" class="btn btn-primary ts-filter-btn">
         <i data-lucide="filter"></i>
         تصفية
       </button>
-      {% if search or status %}
+      {% if search or status or city_id %}
       <a href="{{ url_for('inquiries.list_inquiries') }}" class="btn btn-ghost ts-filter-btn ts-filter-reset" title="إعادة تعيين">
         <i data-lucide="rotate-ccw"></i>
       </a>
@@ -95,8 +105,9 @@
       <tr>
         <th style="width: 70px;">#</th>
         <th style="width: 100px;">صورة الروشتة</th>
-        <th>رقم هاتف المريض</th>
+        <th>هوية العميل (من المنصة)</th>
         <th>التحاليل المكتشفة بالذكاء الاصطناعي</th>
+        <th>المنطقة</th>
         <th style="width: 100px;">دقة OCR</th>
         <th style="width: 140px;">تاريخ الاستلام</th>
         <th style="width: 120px;">المنصة</th>
@@ -128,14 +139,20 @@
           {% endif %}
         </td>
         <td>
-          <div style="font-weight: 700; direction: ltr; text-align: right; color: var(--navy-900);">
-            {{ inq.phone_number or '—' }}
+          <div style="font-weight: 700; color: var(--navy-900);">
+            <i data-lucide="user" style="width:13px;height:13px;vertical-align:-2px;color:var(--blue-600);"></i>
+            <span dir="auto">{{ inq.user_identity or inq.phone_number or '-' }}</span>
           </div>
         </td>
         <td>
           <div style="font-size: 0.85rem; color: var(--ink-900); max-width: 260px; line-height: 1.5; white-space: normal;">
             {{ inq.services_mentioned or inq.ocr_extracted_text or 'جاري الفحص...' }}
           </div>
+        </td>
+        <td>
+          {% if inq.city %}
+          <span class="status-chip" style="background: rgba(37,99,235,0.08); color: var(--blue-600);">{{ inq.city.name }}</span>
+          {% endif %}
         </td>
         <td>
           {% if inq.confidence_score is not none %}
@@ -148,7 +165,7 @@
         </td>
         <td>
           <span style="font-size: 0.82rem; color: var(--ink-500);">
-            {{ inq.created_at.strftime('%Y-%m-%d %H:%M') if inq.created_at else '—' }}
+            {{ inq.created_at|local_dt if inq.created_at else '—' }}
           </span>
         </td>
         <td>
@@ -189,7 +206,7 @@
       </tr>
       {% else %}
       <tr>
-        <td colspan="9" style="text-align: center; padding: 56px 20px;">
+        <td colspan="10" style="text-align: center; padding: 56px 20px;">
           <div class="ts-empty-icon"><i data-lucide="file-check"></i></div>
           <h4 style="font-size: 1.05rem; margin-bottom: 6px;">لا توجد روشتات مسجلة حالياً</h4>
           <p style="color: var(--ink-500); font-size: 0.85rem;">كل الروشتات الواردة من المرضى عبر الواتساب أو الفيسبوك ستظهر هنا للمراجعة الطبية.</p>

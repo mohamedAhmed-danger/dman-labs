@@ -71,7 +71,8 @@ def run_agent(
     # 2) من هنا وطالع كل خطوة best-effort: فشلها ميضيّعش الرد على العميل
     t0 = time.perf_counter()
     usage = _record_usage(message, result, ocr_usage)
-    _save_exchange(client_service, client, message, result, response_obj)
+    if result.get("region_guard_action") != "stop" or response_obj.response:
+        _save_exchange(client_service, client, message, result, response_obj)
     RequestProfiler.record_stage("db_save", time.perf_counter() - t0)
 
     _send_booking_email(result)
@@ -105,6 +106,10 @@ def _build_state(message: IncomingMessage, client, laboratory_id, history_rows) 
         "last_bot_message":  client.last_bot_reply or "",
         "chat_history":      history_rows or [],
         "laboratory_id":     laboratory_id,
+        "city_id":           client.city_id,
+        "region_guard_action": None,
+        "sender_name":       getattr(message, "sender_name", None),
+        "sender_phone":      getattr(message, "sender_phone", None),
 
         "intent":            None,
         "response":          None,

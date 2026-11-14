@@ -1,6 +1,7 @@
 import logging
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from models.models import Laboratory, db
 
 from graph.prompts.complaint_prompt import COMPLAINT_SYSTEM_PROMPT
 from graph.state import AgentState
@@ -8,6 +9,7 @@ from graph.tools.complaint_tool import save_complaint_tool
 from llm.llm import get_gemini
 from schemas.complaint import ComplaintResponse
 from services.messaging.client_service import ClientService
+from services.domain.branch_service import BranchService
 from utils.history_utils import get_chat_history
 from utils.llm_utils import extract_token_usage
 from utils.text_utils import detect_language_fallback, get_platform_name
@@ -36,6 +38,16 @@ def complaint_node(state: AgentState) -> dict:
     user_message = state.get("user_message", "")
     current_summary = state.get("summary") or ""
     last_bot_message = state.get("last_bot_message") or ""
+    laboratory_id = state.get("laboratory_id")
+    branches_context = BranchService.format_city_branches_context(
+        laboratory_id,
+        state.get("city_id"),
+    )
+    phone_numbers = BranchService.get_city_phone_numbers(
+        laboratory_id,
+        state.get("city_id"),
+    )
+    phone_contact = f"\n📞 **{', '.join(phone_numbers)}**" if phone_numbers else ""
 
     # 2. Load recent conversation history
     client_service = ClientService(
@@ -48,11 +60,28 @@ def complaint_node(state: AgentState) -> dict:
         state,
         client_service,
     )
+    fallback_language_message = user_message
+    if not any(character.isalpha() for character in user_message):
+        fallback_language_message = last_bot_message or recent_history or user_message
 
     # 3. Build the LLM prompt
     system_prompt = f"""
 {COMPLAINT_SYSTEM_PROMPT}
 
+====================
+CLIENT REGION BRANCHES
+====================
+{branches_context}
+
+Rules for branch details:
+- Use only these details. Never invent an address, phone number, or working hours.
+- If no branch phone is listed, say it is unavailable.
+- Any phone number listed here is the branch's Customer Service Number. It is
+  NEVER the customer's own number. Never offer it as the customer's contact
+  number for a booking or a complaint, and never ask the customer to confirm it.
+- Do not put it in the summary. If you must mention it, label it
+  "(Customer Service Number)".
+====================
 ====================
 ALREADY COLLECTED
 ====================
@@ -92,21 +121,21 @@ RECENT CONVERSATION
         )
 
         lab = db.session.get(Laboratory, laboratory_id) if laboratory_id else Laboratory.query.first()
-        lab_name_ar = lab.name if lab else "معامل ضمان"
-        lab_name_en = lab.name if lab else "Daman Labs"
+        lab_name_ar = lab.name if lab else "المعمل"
+        lab_name_en = lab.name if lab else "the laboratory"
 
         fallback = detect_language_fallback(
-            user_message,
+            fallback_language_message,
             arabic=(
                 f"عذرًا، حدث خطأ مؤقت أثناء معالجة طلبك ⚠️\n\n"
-                f"يرجى المحاولة مرة أخرى بعد قليل، أو يمكنك التواصل مباشرة مع خدمة عملاء {lab_name_ar} لمساعدتك فوراً عبر الرقم:\n"
-                f"📞 **01006446508**\n\n"
+                f"يرجى المحاولة مرة أخرى بعد قليل، أو مراسلة خدمة عملاء {lab_name_ar} هنا لمساعدتك."
+                f"{phone_contact}\n\n"
                 f"نحن في خدمتك دائمًا ✨"
             ),
             default=(
                 f"Apologies, a temporary error occurred while processing your request ⚠️\n\n"
-                f"Please try again in a moment, or contact {lab_name_en} customer service directly for assistance at:\n"
-                f"📞 **01006446508**\n\n"
+                f"Please try again in a moment, or message {lab_name_en} customer service here for assistance."
+                f"{phone_contact}\n\n"
                 f"We are always happy to help! ✨"
             ),
         )
@@ -154,6 +183,9 @@ RECENT CONVERSATION
     # Save complaint
     if tool_name == "save_complaint_tool":
         tool_args["comes_from"] = get_platform_name(platform_id)
+        tool_args["page_id"] = page_id
+        tool_args["platform_id"] = platform_id
+        tool_args["sender_id"] = sender_id
 
         try:
             result = save_complaint_tool.invoke(tool_args)
@@ -165,7 +197,7 @@ RECENT CONVERSATION
             )
 
             reply = detect_language_fallback(
-                user_message,
+                fallback_language_message,
                 arabic="حدث خطأ أثناء تسجيل الشكوى. حاول مرة أخرى.",
                 default="An error occurred while saving your complaint.",
             )
@@ -180,7 +212,7 @@ RECENT CONVERSATION
 
         if result.success:
             reply = detect_language_fallback(
-                user_message,
+                fallback_language_message,
                 arabic=(
                     "تم تسجيل شكواك بنجاح ✅\n"
                     "وسيتواصل معك فريقنا في أقرب وقت."

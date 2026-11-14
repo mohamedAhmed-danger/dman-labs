@@ -37,7 +37,9 @@ def rag_node(state: AgentState) -> Dict[str, Any]:
     try:
         rag_context, search_results, top_score = (
             ContextBuilder.build_rag_context(
-                refined_queries
+                refined_queries,
+                laboratory_id=state.get("laboratory_id"),
+                city_id=state.get("city_id"),
             )
         )
 

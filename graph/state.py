@@ -12,6 +12,11 @@ class AgentState(TypedDict, total=False):
     platform_id: Optional[int]
     platform_name: Optional[str]
     laboratory_id: Optional[int]
+    city_id: Optional[int]
+    city_name: Optional[str]
+    region_guard_action: Optional[str]
+    sender_name: Optional[str]   # WhatsApp pushName / Facebook display name
+    sender_phone: Optional[str]  # Extracted phone number (WhatsApp @c.us JIDs)
 
     # =========================
     # Conversation

@@ -1,6 +1,6 @@
 from flask import Blueprint, request, render_template, redirect, url_for, flash, send_file
 from flask_login import login_required
-from models.models import Status
+from models.models import City, Status
 from services.domain.booking_service import BookingService
 
 bookings_bp = Blueprint('bookings', __name__, url_prefix='/bookings')
@@ -13,13 +13,18 @@ def list_bookings():
     status    = request.args.get('status', '')
     date_from = request.args.get('date_from', '')
     date_to   = request.args.get('date_to', '')
+    city_id   = request.args.get('city_id', type=int)
 
     booking_service = BookingService()
     pagination, _ = booking_service.display_bookings(
-        page=page, search=search, status=status, date_from=date_from, date_to=date_to
+        page=page, search=search, status=status, date_from=date_from, date_to=date_to,
+        city_id=city_id,
     )
     return render_template('bookings/list.html', pagination=pagination, bookings=pagination.items,
-                           search=search, status=status, date_from=date_from, date_to=date_to, Status=Status)
+                           search=search, status=status, date_from=date_from, date_to=date_to,
+                           city_id=city_id,
+                           cities=City.query.order_by(City.laboratory_id, City.sort_order, City.id).all(),
+                           Status=Status)
 
 
 
@@ -62,7 +67,8 @@ def export_bookings():
         search=request.args.get('search', '').strip(),
         status=request.args.get('status', ''),
         date_from=request.args.get('date_from', ''),
-        date_to=request.args.get('date_to', '')
+        date_to=request.args.get('date_to', ''),
+        city_id=request.args.get('city_id', type=int),
     )
     return send_file(output, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                      as_attachment=True, download_name='bookings.xlsx')

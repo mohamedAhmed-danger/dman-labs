@@ -2303,6 +2303,22 @@ textarea.form-control {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
+}
+
+.laboratory-selector-form { min-width: 190px; }
+.laboratory-selector-form .form-control { min-width: 190px; }
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .ts-region-pills-bar {
@@ -2486,7 +2502,91 @@ textarea.form-control {
 }
 .branch-name { font-weight: 700; font-size: 0.88rem; color: var(--navy-900); }
 .branch-sub { font-size: 0.75rem; color: var(--ink-500); display: flex; align-items: center; gap: 4px; }
+.branch-main > div:last-child { min-width: 0; }
+.branch-detail-value { align-items: flex-start; }
+.branch-detail-value span { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
 .branch-actions { display: flex; gap: 4px; }
+
+.branch-modal-overlay { padding: 20px; overflow-y: auto; }
+.branch-modal-card {
+  display: flex;
+  flex-direction: column;
+  width: min(760px, calc(100vw - 32px));
+  max-height: calc(100vh - 40px);
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.28);
+}
+.branch-modal-card .modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 22px 26px 18px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.branch-modal-card .modal-title {
+  margin: 0;
+  color: var(--navy-900);
+  font-size: 1.2rem;
+  font-weight: 800;
+}
+.branch-modal-description {
+  margin: 6px 0 0;
+  color: var(--ink-500);
+  font-size: 0.86rem;
+}
+.branch-modal-card .modal-close-btn {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--ink-700);
+  font-size: 1.35rem;
+  cursor: pointer;
+}
+.branch-modal-form { display: flex; flex: 1; min-height: 0; flex-direction: column; }
+.branch-modal-card .branch-modal-body {
+  overflow-y: auto;
+  margin: 0;
+  padding: 22px 26px;
+  color: var(--ink-700);
+}
+.branch-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 20px; }
+.branch-form-full { grid-column: 1 / -1; }
+.branch-modal-card .form-group { gap: 8px; }
+.branch-modal-card .field-label { margin: 0; color: var(--ink-700); font-size: 0.9rem; font-weight: 700; }
+.branch-modal-card .form-control { height: 48px; border-radius: 10px; font-size: 0.95rem; }
+.branch-modal-card textarea.branch-long-input {
+  height: auto;
+  min-height: 112px;
+  padding: 13px 15px;
+  line-height: 1.7;
+  resize: vertical;
+  white-space: pre-wrap;
+}
+.branch-modal-card .modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 26px;
+  border-top: 1px solid var(--border-soft);
+  background: #f8fafc;
+}
+
+@media (max-width: 600px) {
+  .branch-modal-overlay { align-items: flex-start; padding: 12px; }
+  .branch-modal-card { width: 100%; max-height: calc(100vh - 24px); }
+  .branch-modal-card .modal-header,
+  .branch-modal-card .branch-modal-body { padding-right: 18px; padding-left: 18px; }
+  .branch-form-grid { grid-template-columns: 1fr; }
+  .branch-form-full { grid-column: auto; }
+  .branch-modal-card .modal-footer { padding: 14px 18px; }
+}
 
 .branch-empty-state {
   text-align: center; padding: 24px 12px; color: var(--ink-500);
@@ -2498,5 +2598,65 @@ textarea.form-control {
   display: flex; align-items: center; justify-content: space-between;
   padding: 10px 12px; background: #f8fafc; border: 1px solid var(--border);
   border-radius: var(--radius-sm);
+  cursor: grab;
 }
-
+.city-manage-row:active { cursor: grabbing; }
+.city-manage-row[draggable="true"] { user-select: none; }
+.city-manage-row .drag-handle { cursor: grab; }
+
+
+
+/* ============================================================
+   Results Requests — Customer WhatsApp Action
+   ============================================================ */
+.ts-customer-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.ts-customer-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-weight: 700;
+  color: var(--navy-900);
+}
+.ts-customer-name svg,
+.ts-customer-name i {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  color: var(--blue-600);
+}
+.ts-customer-name span { overflow-wrap: anywhere; }
+.ts-whatsapp-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: 1px solid #bbf7d0;
+  border-radius: 8px;
+  background: #f0fdf4;
+  color: #15803d;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color .2s ease, color .2s ease, border-color .2s ease;
+}
+.ts-whatsapp-btn:hover {
+  background: #16a34a;
+  color: #fff;
+  border-color: #16a34a;
+}
+.ts-whatsapp-btn:focus-visible {
+  outline: 2px solid #16a34a;
+  outline-offset: 2px;
+}
+.ts-whatsapp-btn svg,
+.ts-whatsapp-btn i { width: 16px; height: 16px; }

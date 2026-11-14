@@ -12,8 +12,11 @@ from services.messaging.webhook_service import (
     process_facebook_payload,
     process_waha_payload,
 )
-from services.messaging.redis_worker import process_conversation
+from services.messaging.redis_worker import build_agent_text, process_conversation
 from config import Config
+from platforms.facebook.handler import FacebookHandler
+from platforms.facebook.parser import parse_facebook_message
+from utils import contact_resolver
 
 
 class TestWebhookSuite(unittest.TestCase):
@@ -24,6 +27,98 @@ class TestWebhookSuite(unittest.TestCase):
         self.client = self.app.test_client()
 
     # ── Facebook Tests ────────────────────────────────────────────────────────
+
+    def test_facebook_parser_preserves_text_with_image_attachments(self):
+        parsed = parse_facebook_message(
+            messaging={
+                "sender": {"id": "sender_1"},
+                "message": {
+                    "text": "ممكن أعرف السعر؟",
+                    "attachments": [
+                        {"type": "image", "payload": {"url": "https://example.com/image.jpg"}}
+                    ],
+                },
+            },
+            page_id="page_1",
+            platform_id=1,
+        )
+
+        self.assertEqual([message.type for message in parsed], ["image"])
+        self.assertEqual(parsed[0].text, "ممكن أعرف السعر؟")
+        self.assertEqual(parsed[0].media, {"url": "https://example.com/image.jpg"})
+
+    def test_agent_text_includes_caption_and_ocr_image_result(self):
+        agent_text = build_agent_text([
+            {
+                "image": {"status": "valid", "tests": ["CBC"]},
+                "text": "ممكن أعرف السعر؟",
+            },
+        ])
+
+        self.assertEqual(
+            agent_text,
+            "[Image #1 - OCR Extracted Tests]: CBC\n[User text]: ممكن أعرف السعر؟",
+        )
+
+    @patch("services.messaging.webhook_service.get_redis_client")
+    def test_facebook_message_deduplication_claims_message_id(self, mock_get_redis):
+        mock_redis = MagicMock()
+        mock_redis.set.side_effect = [True, None]
+        mock_get_redis.return_value = mock_redis
+
+        from services.messaging.webhook_service import _claim_facebook_message
+
+        self.assertTrue(_claim_facebook_message("page_1", "mid_1"))
+        self.assertFalse(_claim_facebook_message("page_1", "mid_1"))
+        self.assertEqual(mock_redis.set.call_count, 2)
+
+    @patch("utils.contact_resolver.db.session.get")
+    @patch("utils.contact_resolver.requests.get")
+    def test_facebook_profile_lookup_uses_configured_graph_version(
+        self, mock_get, mock_db_get
+    ):
+        mock_db_get.return_value = MagicMock(token="page_token")
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"name": "Test User"}
+        mock_get.return_value = mock_response
+
+        self.assertEqual(FacebookHandler.API_VERSION, Config.FB_API_VERSION)
+        self.assertEqual(
+            contact_resolver._facebook_name("page_123", 1, "sender_456"),
+            "Test User",
+        )
+        self.assertEqual(
+            mock_get.call_args.args[0],
+            f"https://graph.facebook.com/{Config.FB_API_VERSION}/sender_456",
+        )
+
+    def test_waha_phone_direct_c_us(self):
+        """Verifies phone number is parsed directly from standard WhatsApp @c.us JIDs without HTTP calls."""
+        phone = contact_resolver._waha_phone("201040320487@c.us", "201208140337@c.us")
+        self.assertEqual(phone, "201208140337")
+
+    @patch("utils.contact_resolver.requests.get")
+    def test_waha_phone_lid_calls_waha_api(self, mock_get):
+        """Verifies @lid sender resolves phone number via WAHA default session LID endpoint."""
+        mock_response = MagicMock(status_code=200)
+        mock_response.json.return_value = {"lid": "100571054903490@lid", "pn": "201276347146@c.us"}
+        mock_get.return_value = mock_response
+
+        phone = contact_resolver._waha_phone("201040320487@c.us", "100571054903490@lid")
+        self.assertEqual(phone, "201276347146")
+        self.assertIn("/api/default/lids/100571054903490@lid", mock_get.call_args.args[0])
+
+    @patch("utils.contact_resolver._facebook_name", return_value=None)
+    @patch("utils.contact_resolver._platform_name", return_value="facebook")
+    def test_resolve_user_identity_fallback_name_on_facebook_error(self, mock_plat, mock_fb):
+        """When Facebook Graph API returns None, fallback_name (if provided) is used instead of raw PSID."""
+        identity = contact_resolver.resolve_user_identity(
+            page_id="page_123",
+            platform_id=1,
+            sender_id="28648935384747358",
+            fallback_name="أحمد محمود",
+        )
+        self.assertEqual(identity, "أحمد محمود")
 
     @patch("routes.webhook_routes.VERIFY_TOKEN", "test_secret_token_123")
     def test_facebook_get_valid_verification(self):
@@ -252,15 +347,18 @@ class TestWebhookSuite(unittest.TestCase):
         # Nothing should be sent to the user when quota is exhausted
         mock_handler.send.assert_not_called()
 
+    @patch("services.messaging.webhook_service.ClientService")
     @patch("services.messaging.webhook_service.enqueue_message")
     @patch("services.messaging.webhook_service.get_redis_client")
     @patch("services.messaging.webhook_service.SubscriptionService.can_use_ai", return_value=(True, "OK"))
     @patch("services.messaging.webhook_service.get_handler")
     @patch("services.domain.page_service.PageService.get_page_by_page_and_platform")
     def test_agent_message_is_debounced(
-        self, mock_get_page, mock_get_handler, mock_can_use_ai, mock_redis, mock_enqueue
+        self, mock_get_page, mock_get_handler, mock_can_use_ai, mock_redis, mock_enqueue, mock_client_svc
     ):
         """Messages with mode agent_text are enqueued into Redis queue with arrival time."""
+        mock_client = MagicMock(city_id=1)
+        mock_client_svc.return_value.get_or_create_client.return_value = mock_client
         mock_page = MagicMock(page_id="page_1", laboratory_id=3)
         mock_get_page.return_value = mock_page
         mock_handler = MagicMock()
@@ -338,49 +436,49 @@ class TestWebhookSuite(unittest.TestCase):
 
     def test_subscription_service_can_use_ai_contract(self):
         """Verifies can_use_ai returns (bool, str) tuple across models, IDs, and instances."""
-        active_sub = MagicMock(spec=Subscription)
-        active_sub.is_active = True
-        active_sub.end_date = None
-        active_sub.message_used = 10
-        active_sub.message_limit = 100
-        active_sub.grace_limit = 10
+        with self.app.app_context():
+            active_sub = MagicMock(spec=Subscription)
+            active_sub.is_active = True
+            active_sub.end_date = None
+            active_sub.message_used = 10
+            active_sub.message_limit = 100
+            active_sub.grace_limit = 10
 
-        allowed, reason = SubscriptionService.can_use_ai(active_sub)
-        self.assertTrue(allowed)
-        self.assertEqual(reason, "OK")
+            allowed, reason = SubscriptionService.can_use_ai(active_sub)
+            self.assertTrue(allowed)
+            self.assertEqual(reason, "OK")
 
-        # Quota exceeded
-        exceeded_sub = MagicMock(spec=Subscription)
-        exceeded_sub.is_active = True
-        exceeded_sub.end_date = None
-        exceeded_sub.message_used = 110
-        exceeded_sub.message_limit = 100
-        exceeded_sub.grace_limit = 10
+            # Quota exceeded
+            exceeded_sub = MagicMock(spec=Subscription)
+            exceeded_sub.is_active = True
+            exceeded_sub.end_date = None
+            exceeded_sub.message_used = 110
+            exceeded_sub.message_limit = 100
+            exceeded_sub.grace_limit = 10
 
-        allowed, reason = SubscriptionService.can_use_ai(exceeded_sub)
-        self.assertFalse(allowed)
-        self.assertEqual(reason, "Message limit exceeded.")
+            allowed, reason = SubscriptionService.can_use_ai(exceeded_sub)
+            self.assertFalse(allowed)
+            self.assertEqual(reason, "Message limit exceeded.")
 
-        # Demonstrate Python truthy-tuple caveat: bool((False, reason)) is True!
-        tuple_result = (False, "Message limit exceeded.")
-        self.assertTrue(bool(tuple_result), "Non-empty tuple is always truthy in Python")
-        # Direct unpacking guarantees correct boolean evaluation
-        unpacked_allowed, _ = tuple_result
-        self.assertFalse(unpacked_allowed)
+            # Demonstrate Python truthy-tuple caveat: bool((False, reason)) is True!
+            tuple_result = (False, "Message limit exceeded.")
+            self.assertTrue(bool(tuple_result), "Non-empty tuple is always truthy in Python")
+            # Direct unpacking guarantees correct boolean evaluation
+            unpacked_allowed, _ = tuple_result
+            self.assertFalse(unpacked_allowed)
 
-        # Suspended
-        suspended_sub = MagicMock(spec=Subscription)
-        suspended_sub.is_active = False
-        allowed, reason = SubscriptionService.can_use_ai(suspended_sub)
-        self.assertFalse(allowed)
-        self.assertEqual(reason, "Subscription suspended.")
+            # Suspended
+            suspended_sub = MagicMock(spec=Subscription)
+            suspended_sub.is_active = False
+            allowed, reason = SubscriptionService.can_use_ai(suspended_sub)
+            self.assertFalse(allowed)
+            self.assertEqual(reason, "Subscription suspended.")
 
-        # None / Missing
-        allowed, reason = SubscriptionService.can_use_ai(None)
-        self.assertFalse(allowed)
-        self.assertEqual(reason, "No subscription.")
+            # None / Missing
+            allowed, reason = SubscriptionService.can_use_ai(None)
+            self.assertFalse(allowed)
+            self.assertEqual(reason, "No subscription.")
 
 
 if __name__ == "__main__":
     unittest.main()
-

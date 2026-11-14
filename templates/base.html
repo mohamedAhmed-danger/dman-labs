@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}معامل ضمان للتحاليل الطبية — Daman Labs{% endblock %}</title>
-  <link rel="icon" type="image/png" href="{{ url_for('static', filename='brand/favicon.png') }}">
+  <link rel="icon" type="image/png" href="{{ url_for('static', filename='brand/favicon.png', v='2') }}">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
@@ -27,7 +27,7 @@
   <div class="sidebar-header">
     <div class="brand-badge brand-logo-badge">
       <div class="brand-logo-ring">
-        <img src="{{ url_for('static', filename='brand/daman-icon.png') }}" alt="معامل ضمان" class="brand-logo-img">
+        <img src="{{ url_for('static', filename='brand/daman-icon.png', v='2') }}" alt="معامل ضمان" class="brand-logo-img">
       </div>
       <div class="brand-text-container">
         <div class="lab-name">معامل ضمان</div>
@@ -70,7 +70,11 @@
       <i data-lucide="message-square-warning" class="nav-icon"></i>
       الشكاوى
     </a>
-
+    <a href="{{ url_for('results.list_results') }}"
+   class="nav-item {% if request.endpoint in ['results.list_results'] %}active{% endif %}">
+  <i data-lucide="file-check" class="nav-icon"></i>
+  طلبات النتائج
+</a>
     <p class="nav-section-label">الخدمات والباقات</p>
 
     <a href="{{ url_for('test.test_service') }}"
@@ -208,6 +212,7 @@
 
 <!-- ── SCRIPTS ────────────────────────────────────────────── -->
 <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 
 {% block scripts %}{% endblock %}
 

@@ -2,7 +2,7 @@ import logging
 import mimetypes
 import os
 import time
-from typing import Union
+from typing import Optional, Union
 
 from google import genai
 from google.genai import types
@@ -24,15 +24,32 @@ class TestItem(BaseModel):
     )
 
 
+class OfferItem(BaseModel):
+    name: str = Field(
+        description="Offer/bundle title exactly as written, e.g. 'باقة اطمئن'"
+    )
+    price: Optional[str] = Field(
+        description="Price exactly as written including currency, e.g. '499 جنيه'; null if no price is visible"
+    )
+
+
 class PrescriptionOCRResult(BaseModel):
     is_prescription: bool = Field(
-        description="True if image is a medical prescription, doctor's order, or lab request form"
+        description="True if image is a medical prescription, doctor's order, lab request form, "
+                    "OR a lab offer/package/bundle flyer. False only for unrelated images."
+    )
+    is_offer_or_bundle: bool = Field(
+        description="True only if the image is a promotional lab offer, package, bundle, or discounted "
+                    "test menu. Always false for prescriptions and request forms."
+    )
+    offers: list[OfferItem] = Field(
+        description="Offers/bundles shown on the flyer (name + price only); empty if not an offer."
     )
     extracted_text: str = Field(
-        description="Visible text as written; [illegible] for unreadable parts; empty if not a prescription"
+        description="Visible text as written; [illegible] for unreadable parts; empty if unrelated."
     )
     tests: list[TestItem] = Field(
-        description="Requested lab tests / diagnostic investigations; empty if not a prescription"
+        description="Requested tests for prescriptions only. MUST be empty for offers/bundles and unrelated images."
     )
 
 
@@ -55,6 +72,7 @@ def _detect_mime_type(image_bytes: bytes, file_path: str = None) -> str:
 
 _shared_genai_client = None
 
+
 def _get_genai_client() -> genai.Client:
     """Retrieve or instantiate a shared Google GenAI Client singleton."""
     global _shared_genai_client
@@ -71,23 +89,26 @@ def _get_genai_client() -> genai.Client:
 OCR_SYSTEM_PROMPT = """You are a medical document extraction assistant. Analyze the provided image and return structured data.
 
 Instructions:
-1. `is_prescription`: true if the image is a medical prescription, doctor's order, or lab/investigation request form; false otherwise. If false, return `extracted_text` as "" and `tests` as [].
-2. `extracted_text`: transcribe the visible text exactly as written. Use [illegible] for unreadable parts. Never guess. Text may be Arabic, English, or mixed: transcribe in the original language, do not translate.
-3. `tests`: list every requested laboratory test or diagnostic investigation (including imaging/ECG). Keep names as written (abbreviations stay abbreviated, e.g. CBC, FBS). Do not list the same test twice.
-4. For each test provide `name` and an individual `confidence` score (0.0 to 1.0) reflecting how legible that specific entry is.
-5. Include uncertain tests with LOW confidence instead of omitting them, so a human can review.
-6. Do NOT extract patient info, doctor info, medications, notes, or instructions into `tests`.
+1. `is_prescription`: true if the image is a medical prescription, doctor's order, lab/investigation request form, OR a lab promotional offer / package / bundle flyer. false only if the image is unrelated (personal photos, memes, non-medical ads). If false, return `extracted_text` as "", `offers` as [] and `tests` as [].
+2. `is_offer_or_bundle`: true only if the image is a lab promotional offer, package, bundle, or discounted tests menu. A prescription or request form is NEVER an offer. Otherwise false.
+3. `offers`: if `is_offer_or_bundle` is true, list each offer shown with its `name` (exactly as written, do not translate) and its `price` (exactly as written with currency; null if no price is visible; never calculate or guess a price). If the flyer shows several offers, return one item per offer. Otherwise return [].
+4. `extracted_text`: transcribe the visible text exactly as written. Use [illegible] for unreadable parts. Never guess. Text may be Arabic, English, or mixed: transcribe in the original language, do not translate.
+5. `tests`: for prescriptions/request forms only, list every requested laboratory test or diagnostic investigation (including imaging/ECG). Keep names as written (abbreviations stay abbreviated, e.g. CBC, FBS). Do not list the same test twice. If `is_offer_or_bundle` is true, `tests` MUST be [] (do NOT list tests included in the bundle).
+6. For each test provide `name` and an individual `confidence` score (0.0 to 1.0) reflecting how legible that specific entry is.
+7. Include uncertain tests with LOW confidence instead of omitting them, so a human can review.
+8. Do NOT extract patient info, doctor info, medications, notes, or instructions into `tests`.
 
 CRITICAL HANDWRITING & NOISE-REDUCTION RULES:
 - Ignore pre-printed paper branding: pad logos, drug brand names printed in the header/footer, table lines on the paper.
 - Ignore decorative underlines, stray pen marks, background noise, and stains. Pay attention to marks ONLY if they cross out a test (exclude crossed-out tests) or tick/circle a specific item (on checkbox forms, include only ticked/circled items).
-- Strict zero-hallucination: extract ONLY tests that are explicitly and visually present in the image. Do NOT infer or add complementary tests based on medical context (e.g., do NOT extract 'HbA1c' just because 'FBS' or 'RBS' is present unless 'HbA1c' is physically written).
+- For offers/bundles: extract only the offer name and price. Ignore clinic phone numbers, social media handles, slogans, and the list of included tests.
+- Strict zero-hallucination: extract ONLY what is explicitly and visually present in the image. Do NOT infer or add complementary tests based on medical context (e.g., do NOT extract 'HbA1c' just because 'FBS' or 'RBS' is present unless 'HbA1c' is physically written).
 - Confidence scale:
-  0.90-1.00: printed or clearly legible
-  0.70-0.89: legible handwriting, minor ambiguity
-  0.40-0.69: partially legible, plausible reading
-  0.00-0.39: mostly a guess or unreadable
-  If a test name is ambiguous, cropped, blurry, or requires medical guessing, use below 0.5.
+0.90-1.00: printed or clearly legible
+0.70-0.89: legible handwriting, minor ambiguity
+0.40-0.69: partially legible, plausible reading
+0.00-0.39: mostly a guess or unreadable
+If a test name is ambiguous, cropped, blurry, or requires medical guessing, use below 0.5.
 """
 
 
@@ -117,7 +138,7 @@ def analyze_prescription_image(
 
     mime_type = _detect_mime_type(image_bytes, file_path)
     client = _get_genai_client()
-    model_name = Config.OCR_MODEl  
+    model_name = Config.OCR_MODEl
 
     image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
 
@@ -169,8 +190,9 @@ def analyze_prescription_image(
             raise ValueError("Gemini returned an empty response for prescription OCR.")
 
         logger.info(
-            "🔬 [OCR] Completed: is_prescription=%s | tests_count=%d | total_tokens=%d",
-            result.is_prescription, len(result.tests), ocr_usage["total_tokens"],
+            "🔬 [OCR] Completed: is_prescription=%s | is_offer=%s | offers_count=%d | tests_count=%d | total_tokens=%d",
+            result.is_prescription, result.is_offer_or_bundle, len(result.offers),
+            len(result.tests), ocr_usage["total_tokens"],
         )
 
         trace_logger.log_llm_call(
@@ -182,6 +204,8 @@ def analyze_prescription_image(
         )
         trace_logger.log_output({
             "is_prescription": result.is_prescription,
+            "is_offer_or_bundle": result.is_offer_or_bundle,
+            "offers": [f"{o.name} - {o.price}" for o in result.offers],
             "tests_found": len(result.tests),
             "tests": [f"{t.name} ({t.confidence:.2f})" for t in result.tests],
             "total_tokens": ocr_usage["total_tokens"],

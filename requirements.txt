@@ -12,6 +12,7 @@ python-bidi
 arabic-reshaper
 PyMuPDF
 openpyxl
+xlrd>=2.0.1
 rapidfuzz
 pydantic
 langgraph
@@ -21,3 +22,4 @@ requests
 gunicorn
 redis
 langchain-openai
+tzdata

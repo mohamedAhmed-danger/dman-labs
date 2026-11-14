@@ -2,6 +2,7 @@ import logging
 from typing import Any, Dict, List, Tuple
 
 from schemas.intent import RefinedQuery
+from models.models import City
 from search.db_queries import get_lab_services_by_ids
 from search.search_manager import run_search
 
@@ -49,13 +50,24 @@ class ContextBuilder:
     def format_search_results_to_context(
         results: List[Any],
         lab_services_by_id: Dict[int, Any],
+        laboratory_id: int,
+        city_id: int,
     ) -> str:
         """Format search results and lab data into LLM-readable context."""
+        if not laboratory_id or not city_id:
+            raise ValueError("laboratory_id and city_id are required for context formatting")
+        city = City.query.filter_by(id=city_id, laboratory_id=laboratory_id).first()
+        if not city:
+            raise ValueError("City does not belong to the requested laboratory")
+        unavailable = (
+            f"Client region: {city.name}\n"
+            "No matching test in the client's region. Do not use information or prices from other regions."
+        )
         if not results:
             logger.warning("⚠️ [CONTEXT BUILDER] No results provided to format_search_results_to_context.")
-            return "No matching laboratory test information was found."
+            return unavailable
 
-        context_blocks = []
+        context_blocks = [f"Client region: {city.name}"]
 
         for idx, result in enumerate(results, 1):
             lab = lab_services_by_id.get(result.id)
@@ -63,6 +75,12 @@ class ContextBuilder:
                 logger.warning(
                     "⚠️ [CONTEXT BUILDER] Lab service not found in DB | id=%s",
                     result.id,
+                )
+                continue
+            if lab.laboratory_id != laboratory_id or lab.city_id != city_id:
+                logger.warning(
+                    "Refusing out-of-scope test row in context | id=%s lab=%s city=%s",
+                    result.id, laboratory_id, city_id,
                 )
                 continue
 
@@ -93,9 +111,9 @@ class ContextBuilder:
             )
             context_blocks.append(block)
 
-        if not context_blocks:
+        if len(context_blocks) == 1:
             logger.warning("⚠️ [CONTEXT BUILDER] All results failed DB lookup, empty context produced.")
-            return "No matching laboratory test information was found."
+            return unavailable
 
         final_context = "\n\n".join(context_blocks)
         logger.info(
@@ -109,11 +127,15 @@ class ContextBuilder:
     def build_rag_context(
         cls,
         refined_queries: List[Any],
+        laboratory_id: int,
+        city_id: int,
     ) -> Tuple[str, List[Any], float]:
         """
         Run the complete RAG search pipeline:
         Normalize Queries -> Search -> Fetch Lab Data -> Build Context.
         """
+        if not laboratory_id or not city_id:
+            raise ValueError("laboratory_id and city_id are required for RAG context")
         logger.info("🚀 [RAG PIPELINE START] Input raw queries count: %d", len(refined_queries or []))
 
         if not refined_queries:
@@ -128,7 +150,7 @@ class ContextBuilder:
         # 1. Run search
         try:
             logger.info("🔎 [RAG PIPELINE] Running search across %d normalized queries...", len(typed_queries))
-            search_output = run_search(typed_queries)
+            search_output = run_search(typed_queries, laboratory_id, city_id)
             results = search_output.get("results", [])
             top_score = search_output.get("top_score", 0.0)
             logger.info("🎯 [RAG PIPELINE] Search completed | raw_results=%d | top_score=%.4f", len(results), top_score)
@@ -142,8 +164,9 @@ class ContextBuilder:
 
         if not results:
             logger.info("⚠️ [RAG PIPELINE] Search returned 0 matching results.")
+            context = cls.format_search_results_to_context([], {}, laboratory_id, city_id)
             return (
-                "No matching laboratory test information was found.",
+                context,
                 [],
                 0.0,
             )
@@ -153,7 +176,7 @@ class ContextBuilder:
         logger.info("📦 [RAG PIPELINE] Fetching DB records for unique test IDs: %s", test_ids)
 
         try:
-            lab_services = get_lab_services_by_ids(test_ids)
+            lab_services = get_lab_services_by_ids(test_ids, laboratory_id, city_id)
             logger.info("✅ [RAG PIPELINE] Successfully fetched %d lab service records from DB.", len(lab_services))
         except Exception:
             logger.exception(
@@ -172,8 +195,9 @@ class ContextBuilder:
         formatted_context = cls.format_search_results_to_context(
             results=results,
             lab_services_by_id=lab_services_by_id,
+            laboratory_id=laboratory_id,
+            city_id=city_id,
         )
-
         logger.info(
             "🏁 [RAG PIPELINE COMPLETE] final_context_length=%d | results=%d | top_score=%.4f",
             len(formatted_context),

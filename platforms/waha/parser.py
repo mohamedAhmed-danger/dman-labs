@@ -66,6 +66,12 @@ def parse_waha_message(
             logger.debug("Ignoring ad-referral message from: %s", sender_id)
             return None
 
+        sender_name = (
+            payload.get("pushName")
+            or (payload.get("_data") or {}).get("notifyName")
+            or (payload.get("sender") or {}).get("pushname")
+        )
+        sender_phone = sender_id.split("@")[0] if sender_id and ("@c.us" in sender_id or "@s.whatsapp.net" in sender_id) else None
         has_media = payload.get("hasMedia", False)
         media = payload.get("media")
         msg_body = payload.get("body")
@@ -87,8 +93,8 @@ def parse_waha_message(
                 msg_type = "file"
 
             logger.debug(
-                "[WAHA PARSER] Parsed %s message sender_id=%s has_text=%s",
-                msg_type, sender_id, bool(msg_body),
+                "[WAHA PARSER] Parsed %s message sender_id=%s has_text=%s name=%s",
+                msg_type, sender_id, bool(msg_body), sender_name,
             )
             return IncomingMessage(
                 sender_id=sender_id,
@@ -98,12 +104,14 @@ def parse_waha_message(
                 msg_type=msg_type,
                 text=msg_body,
                 media=media,
+                sender_name=sender_name,
+                sender_phone=sender_phone,
             )
 
         if msg_body and str(msg_body).strip():
             logger.debug(
-                "[WAHA PARSER] Parsed text message sender_id=%s len=%d",
-                sender_id, len(str(msg_body)),
+                "[WAHA PARSER] Parsed text message sender_id=%s len=%d name=%s",
+                sender_id, len(str(msg_body)), sender_name,
             )
             return IncomingMessage(
                 sender_id=sender_id,
@@ -112,6 +120,8 @@ def parse_waha_message(
                 platform_name=platform_name,
                 msg_type="text",
                 text=msg_body,
+                sender_name=sender_name,
+                sender_phone=sender_phone,
             )
 
         return None

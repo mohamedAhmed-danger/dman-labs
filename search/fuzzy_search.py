@@ -139,9 +139,14 @@ def fuzzy_search(
     keywords: Optional[List[str]] = None,
     lab_services: Optional[List[dict]] = None,
     limit: int = 2,
+    *,
+    laboratory_id: int,
+    city_id: int,
 ) -> List[SearchResult]:
     """Execute fuzzy search over laboratory services."""
 
+    if not laboratory_id or not city_id:
+        raise ValueError("laboratory_id and city_id are required for fuzzy search")
     search_terms = prepare_search_terms(
         query=query,
         aliases=aliases,
@@ -152,7 +157,7 @@ def fuzzy_search(
         return []
 
     if lab_services is None:
-        lab_services = get_all_active_lab_services_for_search()
+        lab_services = get_all_active_lab_services_for_search(laboratory_id, city_id)
 
     search_term_ngrams_map = {
         term: generate_ngrams(term)

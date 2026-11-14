@@ -83,11 +83,56 @@ def _handle_non_prescription(message, ocr_usage: dict) -> dict:
     return {"mode": "agent", "text": agent_text, "ocr_usage": ocr_usage}
 
 
+def _handle_offer_or_bundle(ocr_result, ocr_usage: dict) -> dict:
+    """Routes lab offer/bundle flyers to the agent with an explicit label (name + price only)."""
+    offers = [o for o in ocr_result.offers if o.name and o.name.strip()]
+
+    if offers:
+        offers_lines = "\n".join(
+            f"- {o.name.strip()} | Price on flyer: {o.price.strip() if o.price else 'not shown'}"
+            for o in offers
+        )
+    else:
+        offers_lines = "- (offer name could not be read)"
+
+    agent_text = (
+        "[IMAGE TYPE: LAB OFFER / BUNDLE FLYER - not a doctor's prescription]\n"
+        f"Offers on the flyer:\n{offers_lines}\n"
+        "The customer sent this flyer and is asking about this offer. Look it up by name in the "
+        "lab's own data and explain its details, included tests, current price, and preparation. "
+        "If the lab's data doesn't have it or the price differs, say so; do not invent contents or prices."
+    )
+    trace_logger.step(
+        "Prescription Decision: Offer/Bundle Routed to Agent",
+        input_data={
+            "status": "OFFER_BUNDLE",
+            "offers": [{"name": o.name, "price": o.price} for o in offers],
+        },
+    )
+    return {"mode": "agent", "text": agent_text, "ocr_usage": ocr_usage}
+
+
 def _determine_prescription_pending(ocr_result) -> bool:
     """Returns True if prescription requires manual doctor review due to low confidence."""
     if not ocr_result.tests:
         return True
-    return any(test.confidence < 0.85 for test in ocr_result.tests)
+    return any(test.confidence < 0.90 for test in ocr_result.tests)
+
+
+def _get_client_city_id(message) -> Optional[int]:
+    """Return the client's saved city_id, or None if not selected yet / lookup fails."""
+    try:
+        return ClientService(
+            platform_id=message.platform_id,
+            page_id=message.page_id,
+            sender_id=message.sender_id,
+        ).get_city_id()
+    except Exception:
+        logger.exception(
+            "[PRESCRIPTION INTAKE] Failed to load client city_id | sender_id=%s",
+            message.sender_id,
+        )
+        return None
 
 
 def _save_inquiry_record(message, page, filename: str, ocr_result, pending: bool) -> float:
@@ -96,22 +141,48 @@ def _save_inquiry_record(message, page, filename: str, ocr_result, pending: bool
     min_confidence = min((t.confidence for t in ocr_result.tests), default=0.0)
     services_mentioned = ", ".join(t.name for t in ocr_result.tests) if ocr_result.tests else None
     comes_from = f"{message.platform_name}:{message.sender_id}:{message.page_id}"
+    city_id = _get_client_city_id(message)
+    
+    identity = None
+    fallback_name = getattr(message, "sender_name", None)
+    try:
+        from utils.contact_resolver import resolve_user_identity
+
+        identity = resolve_user_identity(
+            message.page_id,
+            message.platform_id,
+            message.sender_id,
+            fallback_name=fallback_name,
+        )
+    except Exception:
+        logger.exception(
+            "[PRESCRIPTION INTAKE] Could not resolve user identity | sender_id=%s",
+            message.sender_id,
+        )
+        identity = fallback_name or message.sender_id
+
+    resolved_phone = getattr(message, "sender_phone", None)
+    if not resolved_phone and "whatsapp" in getattr(message, "platform_name", "").lower():
+        resolved_phone = identity if (identity and identity.isdigit()) else (message.sender_id.split("@")[0] if "@" in message.sender_id else "")
 
     inquiry_result = inquiry_service.save_inquiry(
         laboratory_id=page.laboratory_id if page else 1,
-        phone_number="",
+        city_id=city_id,
+        phone_number=resolved_phone or "",
         comes_from=comes_from,
         prescription_img=filename,
         ocr_extracted_text=ocr_result.extracted_text,
         confidence_score=min_confidence,
         services_mentioned=services_mentioned,
         status=Status.PENDING if pending else Status.REVIEWED,
+        user_identity=identity,
     )
 
     logger.info(
-        "[PRESCRIPTION INQUIRY SAVED] Inquiry ID: %s | Status: %s",
+        "[PRESCRIPTION INQUIRY SAVED] Inquiry ID: %s | Status: %s | city_id=%s",
         inquiry_result.inquiry.id if inquiry_result and inquiry_result.inquiry else "None",
         Status.PENDING.value if pending else Status.REVIEWED.value,
+        city_id,
     )
     trace_logger.log_db_operation(
         "save_inquiry",
@@ -166,12 +237,21 @@ def _handle_reviewed_prescription(ocr_result, ocr_usage: dict) -> dict:
     )
     return {"mode": "agent", "text": agent_text, "ocr_usage": ocr_usage}
 
+
 def _image_result(status: str, ocr_result=None) -> dict:
-    """status: "valid" | "pending" | "spam"."""
+    """status: "valid" | "pending" | "spam" | "offer"."""
     tests = []
+    offers = []
     if ocr_result:
         tests = [t.name for t in ocr_result.tests if t.name]
-    return {"status": status, "tests": tests}
+        if status == "offer":
+            offers = [
+                {"name": o.name.strip(), "price": (o.price or "").strip() or None}
+                for o in ocr_result.offers
+                if o.name and o.name.strip()
+            ]
+    return {"status": status, "tests": tests, "offers": offers}
+
 
 def extract_prescription_payload(image_bytes: bytes, message, page) -> dict:
     """
@@ -224,10 +304,14 @@ def extract_prescription_payload(image_bytes: bytes, message, page) -> dict:
             "[PRESCRIPTION OCR RESULT]\n"
             "   Sender ID:        %s\n"
             "   Is Prescription:  %s\n"
+            "   Is Offer/Bundle:  %s\n"
+            "   Offers Found:     %s\n"
             "   Tests Found:      %s\n"
             "   Tokens Used:      %s",
             message.sender_id,
             ocr_result.is_prescription,
+            ocr_result.is_offer_or_bundle,
+            [f"{o.name} - {o.price}" for o in ocr_result.offers],
             [f"{t.name} ({t.confidence:.2f})" for t in ocr_result.tests],
             ocr_usage.get("total_tokens", 0) if ocr_usage else 0,
         )
@@ -235,10 +319,23 @@ def extract_prescription_payload(image_bytes: bytes, message, page) -> dict:
         try:
             tests_list = getattr(ocr_result, "tests", [])
             avg_conf = (sum([t.confidence for t in tests_list]) / max(len(tests_list), 1) * 100) if tests_list else 0.0
+
+            if not ocr_result.is_prescription:
+                summary_status = "NON_PRESCRIPTION"
+            elif ocr_result.is_offer_or_bundle:
+                summary_status = "OFFER_BUNDLE"
+            else:
+                summary_status = "SUCCESS"
+
+            if ocr_result.is_offer_or_bundle:
+                recognized_services = [f"{o.name} - {o.price or 'no price'}" for o in ocr_result.offers]
+            else:
+                recognized_services = [f"{t.name} ({t.confidence:.2f})" for t in tests_list]
+
             ocr_summary_data = {
-                "status": "SUCCESS" if ocr_result.is_prescription else "NON_PRESCRIPTION",
-                "extracted_text": getattr(ocr_result, "raw_text", ""),
-                "recognized_services": [f"{t.name} ({t.confidence:.2f})" for t in tests_list],
+                "status": summary_status,
+                "extracted_text": getattr(ocr_result, "extracted_text", ""),
+                "recognized_services": recognized_services,
                 "confidence_score": round(avg_conf, 1),
             }
             trace_logger.log_production_summary(
@@ -253,13 +350,20 @@ def extract_prescription_payload(image_bytes: bytes, message, page) -> dict:
         except Exception as summary_err:
             logger.exception("[prescription_intake] Production summary logging failed: %s", summary_err)
 
-                # Step A: Classification check (not a prescription / spam)
+        # Step A: Classification check (not a prescription / spam)
         if not ocr_result.is_prescription:
             payload = _handle_non_prescription(message, ocr_usage)
             payload["image_result"] = _image_result("spam")
             return payload
 
-        # Step B: Confidence check & persistence
+        # Step B: Lab offer / bundle flyer -> straight to agent with a clear label.
+        # Skips inquiry persistence, confidence check and the doctor-review email on purpose.
+        if ocr_result.is_offer_or_bundle:
+            payload = _handle_offer_or_bundle(ocr_result, ocr_usage)
+            payload["image_result"] = _image_result("offer", ocr_result)
+            return payload
+
+        # Step C: Standard prescription: confidence check & persistence
         pending = _determine_prescription_pending(ocr_result)
         min_confidence = _save_inquiry_record(message, page, filename, ocr_result, pending)
 
@@ -268,11 +372,11 @@ def extract_prescription_payload(image_bytes: bytes, message, page) -> dict:
             payload["image_result"] = _image_result("pending")
             return payload
 
-        # Step C: Reviewed flow -> ALL tests >= 0.80
+        # Step D: Reviewed flow -> ALL tests >= 0.85
         payload = _handle_reviewed_prescription(ocr_result, ocr_usage)
         payload["image_result"] = _image_result("valid", ocr_result)
         return payload
-    
+
     except Exception as e:
         logger.exception(
             "[extract_prescription_payload] Error | sender_id=%s", message.sender_id,

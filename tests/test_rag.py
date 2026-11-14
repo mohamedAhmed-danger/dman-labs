@@ -154,7 +154,7 @@ TEST_CASES = [
 ]
 
 
-def run_all(min_score: float = 0.0):
+def run_all(laboratory_id: int, city_id: int, min_score: float = 0.0):
 
     with app.app_context():
 
@@ -163,7 +163,7 @@ def run_all(min_score: float = 0.0):
 
         for i, refined_query in enumerate(TEST_CASES, start=1):
 
-            result = run_search([refined_query])
+            result = run_search([refined_query], laboratory_id, city_id)
 
             print(f"\n[{i}/{len(TEST_CASES)}] 🔍 الوصف: {refined_query.description}")
             print(f"     الكويري: \"{refined_query.query}\"")
@@ -190,6 +190,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--min-score", type=float, default=0.0,
                          help="متعرضش نتايج أقل من القيمة دي (مثلاً 0.5)")
+    parser.add_argument("--laboratory-id", type=int, required=True)
+    parser.add_argument("--city-id", type=int, required=True)
     args = parser.parse_args()
 
-    run_all(min_score=args.min_score)
+    run_all(
+        laboratory_id=args.laboratory_id,
+        city_id=args.city_id,
+        min_score=args.min_score,
+    )

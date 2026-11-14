@@ -24,8 +24,10 @@ env/
 
 # ── Google OAuth tokens & credentials ───────────────────────────────────────
 token.json
+credentialss.json
 credentials.json
 
+docker-compose.yml.bak
 # ── Logs ────────────────────────────────────────────────────────────────────
 logs/
 *.log

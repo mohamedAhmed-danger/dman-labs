@@ -11,11 +11,17 @@ logger = logging.getLogger(__name__)
 CONTEXT_BUDGET = 50
 
 
-def run_search(refined_queries: List[Any]) -> Dict[str, Any]:
+def run_search(
+    refined_queries: List[Any],
+    laboratory_id: int,
+    city_id: int,
+) -> Dict[str, Any]:
     """
     Execute fuzzy and semantic search across active laboratory services
     for each refined query, then merge and rank the results.
     """
+    if not laboratory_id or not city_id:
+        raise ValueError("laboratory_id and city_id are required for search")
     logger.info("🔎 [SEARCH MANAGER START] Received %d queries to search", len(refined_queries or []))
 
     if not refined_queries:
@@ -27,16 +33,14 @@ def run_search(refined_queries: List[Any]) -> Dict[str, Any]:
 
     # 1. Load active lab services from DB
     try:
-        lab_services = get_all_active_lab_services_for_search()
+        lab_services = get_all_active_lab_services_for_search(laboratory_id, city_id)
         logger.info("📚 [SEARCH MANAGER] Loaded %d active lab services from DB for fuzzy matching", len(lab_services))
     except Exception:
         logger.exception("[SEARCH MANAGER] Failed to load active lab services from database")
-        return {
-            "results": [],
-            "top_score": 0.0,
-        }
+        raise
 
     all_results = []
+    search_errors = []
 
     # 2. Run fuzzy + semantic search for each refined query
     for idx, item in enumerate(refined_queries, 1):
@@ -51,11 +55,14 @@ def run_search(refined_queries: List[Any]) -> Dict[str, Any]:
                 keywords=item.keywords,
                 lab_services=lab_services,
                 limit=2,
+                laboratory_id=laboratory_id,
+                city_id=city_id,
             )
             logger.info("  ├─ [Fuzzy Search] Query #%d returned %d matches", idx, len(f_results))
             all_results.extend(f_results)
         except Exception:
             logger.exception("[SEARCH MANAGER] Fuzzy search failed for query: %s", query_text)
+            search_errors.append("fuzzy")
 
         # Semantic Search
         try:
@@ -64,12 +71,19 @@ def run_search(refined_queries: List[Any]) -> Dict[str, Any]:
                 description=item.description,
                 keywords=item.keywords,
                 limit=3,
+                laboratory_id=laboratory_id,
+                city_id=city_id,
             )
             logger.info("  └─ [Semantic Search] Query #%d returned %d matches", idx, len(s_results))
             all_results.extend(s_results)
         except Exception:
             logger.exception("[SEARCH MANAGER] Semantic search failed for query: %s", query_text)
+            search_errors.append("semantic")
 
+    if not all_results and search_errors:
+        raise RuntimeError(
+            "No search source completed successfully; refusing to report an empty city catalog."
+        )
     logger.info("📊 [SEARCH MANAGER] Total raw matches collected (Fuzzy + Semantic): %d", len(all_results))
 
     # 3. Merge & deduplicate results

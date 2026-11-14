@@ -57,6 +57,7 @@ class City(db.Model):
     laboratory_id = db.Column(db.Integer, db.ForeignKey('laboratories.id'), nullable=False)
     name = db.Column(db.String(100), nullable=False)
     sort_order = db.Column(db.Integer, default=0, nullable=False)
+    aliases = db.Column(db.JSON, nullable=True)
 
     branches = db.relationship('Branch', backref='city', lazy=True, cascade="all, delete-orphan")
     lab_services = db.relationship('LabService', backref='city', lazy=True)
@@ -67,9 +68,9 @@ class Branch(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     city_id = db.Column(db.Integer, db.ForeignKey('cities.id'), nullable=False)
     name = db.Column(db.String(100), nullable=False)
-    address = db.Column(db.String(255), nullable=True)
-    phone_number = db.Column(db.String(15), nullable=True)
-    working_hours = db.Column(db.String(100), nullable=True)
+    address = db.Column(db.Text(), nullable=True)
+    phone_number = db.Column(db.Text(), nullable=True)
+    working_hours = db.Column(db.Text(), nullable=True)
 
 
 
@@ -148,12 +149,16 @@ class Booking(db.Model):
     time = db.Column(db.String(20), nullable=True) # Specific time requested by the user for the booking
     comes_from = db.Column(db.String(100)) # Source platform (e.g., WhatsApp, Facebook)
     address = db.Column(db.String(255), nullable=False) # Address of the user or patient
-
+    city_id = db.Column(db.Integer, db.ForeignKey('cities.id'), nullable=True, index=True)
+    city = db.relationship('City')
+    user_identity = db.Column(db.String(150), nullable=True, index=True)  # WhatsApp phone OR Facebook name
 
 class Inquiry(db.Model):
     __tablename__ = 'inquiries'
     id = db.Column(db.Integer, primary_key=True) # Incremental ID
     laboratory_id = db.Column(db.Integer, db.ForeignKey('laboratories.id'), nullable=False) # Foreign Key linking to Laboratory
+    city_id = db.Column(db.Integer, db.ForeignKey('cities.id'), nullable=True, index=True)
+    city = db.relationship('City')
     prescription_img = db.Column(db.String(255), nullable=True) # Path/URL of the prescription image sent by the patient
     status = db.Column(db.Enum(Status), default=Status.PENDING) # Status of the inquiry
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc)) # Timestamp when saved to DB
@@ -164,6 +169,7 @@ class Inquiry(db.Model):
     services_mentioned = db.Column(db.String(500)) # Services mentioned (used if the admin selects the tests manually during review)
     deleted_at = db.Column(db.DateTime, nullable=True) # Timestamp to track deletion of images older than 8 days
     deletion_reason = db.Column(db.String(50), nullable=True) # Reason for deletion
+    user_identity = db.Column(db.String(150), nullable=True, index=True)  # WhatsApp phone OR Facebook name
 
 
 class Complaint(db.Model):
@@ -174,6 +180,8 @@ class Complaint(db.Model):
     status = db.Column(db.Enum(Status), default=Status.PENDING) # Status of the complaint (e.g., PENDING, REVIEWED)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc)) # Timestamp when the complaint was submitted
     comes_from = db.Column(db.String(100)) # Source platform where the complaint originated (e.g., WhatsApp, Facebook)
+    user_identity = db.Column(db.String(150), nullable=True, index=True)  # WhatsApp phone OR Facebook name
+    resolution_text = db.Column(db.Text, nullable=True)
 
 
 class Subscription(db.Model):
@@ -226,3 +234,14 @@ class Bundle(db.Model):
     price = db.Column(db.Float, nullable=False)
     description = db.Column(db.Text())  
     instructions = db.Column(db.Text())
+
+
+class ResultRequest(db.Model):
+    __tablename__ = 'result_requests'
+    id = db.Column(db.Integer, primary_key=True)
+    user_identity = db.Column(db.String(150), nullable=False, index=True)  # WhatsApp phone OR Facebook name
+    laboratory_id = db.Column(db.Integer, db.ForeignKey('laboratories.id'), nullable=True)
+    city_id = db.Column(db.Integer, db.ForeignKey('cities.id'), nullable=True, index=True)
+    city = db.relationship('City')
+    status = db.Column(db.Enum(Status), default=Status.PENDING)  # PENDING / REVIEWED
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))

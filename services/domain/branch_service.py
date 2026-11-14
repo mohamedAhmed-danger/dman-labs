@@ -86,7 +86,69 @@ class BranchService:
             logger.exception("Failed to fetch branches for city %s: %s", city_id, e)
             return []
 
-    def update_branch(self, branch_id: int = None, name: str = None, address: str = None,
+    @staticmethod
+    def get_city_branches(laboratory_id: int, city_id: int) -> list[Branch]:
+        """Fetch branches from the requested city, validated against its laboratory."""
+        if not laboratory_id or not city_id:
+            raise ValueError("laboratory_id and city_id are required")
+        city = City.query.filter_by(
+            id=city_id,
+            laboratory_id=laboratory_id,
+        ).first()
+        if not city:
+            raise ValueError("City does not belong to the requested laboratory")
+        try:
+            return (
+                Branch.query
+                .join(City, Branch.city_id == City.id)
+                .filter(
+                    Branch.city_id == city_id,
+                    City.laboratory_id == laboratory_id,
+                )
+                .order_by(Branch.id.asc())
+                .all()
+            )
+        except Exception:
+            logger.exception(
+                "Failed to fetch branches | laboratory_id=%s city_id=%s",
+                laboratory_id,
+                city_id,
+            )
+            raise
+
+    @classmethod
+    def get_city_phone_numbers(cls, laboratory_id: int, city_id: int) -> list[str]:
+        """Return unique contact numbers configured for branches in the city."""
+        if not laboratory_id or not city_id:
+            return []
+        branches = cls.get_city_branches(laboratory_id, city_id)
+        return list(dict.fromkeys(
+            branch.phone_number.strip()
+            for branch in branches
+            if branch.phone_number and branch.phone_number.strip()
+        ))
+
+    @classmethod
+    def format_city_branches_context(cls, laboratory_id: int, city_id: int) -> str:
+        city = City.query.filter_by(
+            id=city_id,
+            laboratory_id=laboratory_id,
+        ).first()
+        if not city:
+            raise ValueError("City does not belong to the requested laboratory")
+        branches = cls.get_city_branches(laboratory_id, city_id)
+        lines = [f"Branches in the client's region ({city.name}):"]
+        if not branches:
+            lines.append("No branches or branch details are available for this region.")
+        for branch in branches:
+            lines.append(
+                f"- {branch.name}; address: {branch.address or 'Not available'}; "
+                f"phone: {branch.phone_number or 'Not available'}; "
+                f"working hours: {branch.working_hours or 'Not available'}"
+            )
+        return "\n".join(lines)
+
+    def update_branch(self, branch_id: int = None, city_id: int = None, name: str = None, address: str = None,
                       phone_number: str = None, working_hours: str = None, laboratory_id: int = None):
         target_id = branch_id or self.branch_id
         lab_id = laboratory_id or self.laboratory_id
@@ -95,6 +157,22 @@ class BranchService:
             branch, msg = self.get_branch(branch_id=target_id, laboratory_id=lab_id)
             if not branch:
                 return None, msg
+
+            if city_id is not None:
+                try:
+                    city_id = int(city_id)
+                except (TypeError, ValueError):
+                    return None, "يرجى اختيار المنطقة"
+                if not city_id:
+                    return None, "يرجى اختيار المنطقة"
+
+                city = db.session.get(City, city_id)
+                if not city:
+                    return None, "المنطقة المختارة غير موجودة"
+                if lab_id and city.laboratory_id != lab_id:
+                    return None, "المنطقة لا تتبع المعمل الخاص بك"
+
+                branch.city_id = city_id
 
             if name is not None:
                 clean_name = name.strip()

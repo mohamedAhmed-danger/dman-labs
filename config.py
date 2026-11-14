@@ -4,6 +4,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class Config:
+
+    # Facebook Graph API version used by all Facebook endpoints.
+    FB_API_VERSION = os.getenv("FB_API_VERSION", "v26.0")
     
     # Flask Security
     SECRET_KEY = os.getenv("SECRET_KEY")
@@ -47,4 +50,5 @@ class Config:
     GMAIL_CREDENTIALS_PATH = os.getenv("GMAIL_CREDENTIALS_PATH")
     WEBHOOK_THREAD_POOL_SIZE = int(os.getenv("WEBHOOK_THREAD_POOL_SIZE", "8"))
     REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
     

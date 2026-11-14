@@ -53,6 +53,7 @@ class BookingService:
         status=None,
         date_from=None,
         date_to=None,
+        city_id=None,
     ):
         """
         Fetch paginated bookings using the provided filters.
@@ -61,6 +62,8 @@ class BookingService:
         Date filters apply to the appointment date, not booking creation time.
         """
         query = Booking.query
+        if city_id:
+            query = query.filter(Booking.city_id == city_id)
 
         # Apply the default 30-day window only when no explicit filters are provided.
         if not date_from and not date_to and not search:
@@ -71,6 +74,7 @@ class BookingService:
             query = query.filter(
                 db.or_(
                     Booking.name.ilike(f"%{search}%"),
+                    Booking.user_identity.ilike(f"%{search}%"),
                     Booking.phone_number.ilike(f"%{search}%"),
                 )
             )
@@ -141,6 +145,8 @@ class BookingService:
         comes_from: str,
         time: str,
         address: str,
+        city_id: int,
+        user_identity: str | None = None,
     ) -> BookingSaveResult:
         """
         Save a booking, generate its reference ID, and create its confirmation image.
@@ -164,6 +170,8 @@ class BookingService:
             booking_time=datetime.now(timezone.utc),
             time=time,
             address=address,
+            city_id=city_id,
+            user_identity=user_identity,
         )
 
         db.session.add(booking)
@@ -207,7 +215,7 @@ class BookingService:
             booking_id=booking.id,
         )
 
-    def export_to_excel(self, search, status, date_from, date_to):
+    def export_to_excel(self, search, status, date_from, date_to, city_id=None):
         """Generate an in-memory Excel workbook using the booking filters with premium formatting."""
         pagination, _ = self.display_bookings(
             page=1,
@@ -216,6 +224,7 @@ class BookingService:
             status=status,
             date_from=date_from,
             date_to=date_to,
+            city_id=city_id,
         )
 
         wb = openpyxl.Workbook()
@@ -225,11 +234,13 @@ class BookingService:
             "الرقم المرجعي",
             "الاسم",
             "رقم الهاتف",
+            "هوية العميل",
             "العنوان",
             "التفاصيل",
             "تاريخ الزيارة",
             "الوقت",
             "المنصة",
+            "المنطقة",
             "وقت الإنشاء",
             "الحالة",
         ]
@@ -240,11 +251,13 @@ class BookingService:
                 booking.reference_id or f"#{booking.id}",
                 booking.name,
                 booking.phone_number,
+                booking.user_identity or "-",
                 booking.address,
                 booking.details,
                 booking.date,
                 booking.time,
                 booking.comes_from or "غير محدد",
+                booking.city.name if booking.city else "",
                 (
                     booking.booking_time.strftime("%Y-%m-%d %H:%M")
                     if booking.booking_time
@@ -258,7 +271,7 @@ class BookingService:
             title="الحجوزات المنزلية",
             headers=headers,
             rows=rows,
-            status_col_idx=10,  # 10th column is Status
+            status_col_idx=12,  # 12th column is Status
         )
 
         output = BytesIO()

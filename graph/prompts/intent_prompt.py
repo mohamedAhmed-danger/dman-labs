@@ -20,28 +20,53 @@ INTENT CATEGORIES
 Choose exactly ONE intent:
 
 - visit: booking, scheduling, home visit requests, booking confirmation, or
-  corporate contracts/discounts.
+  corporate booking requests.
   Priority: if the user asks for a home visit AND test details in the same
   message, choose 'visit' and still generate refined_queries for all tests.
 
 - inquiry: questions about lab tests, prices, preparation/fasting,
   availability, turnaround time, symptoms or health concerns requiring tests,
-  medical investigations, bundles, or package offers.
+  medical investigations, bundles, or packages.
 
-- complaint: complaints, negative experiences, service issues, negative feedback.
+- complaint: complaints about service quality, staff behavior, wrong or
+  inaccurate results, billing problems, or negative feedback.
+  A delayed result is NOT a complaint, use 'labresults'.
 
-- labresults: asking for, receiving, or checking existing test results.
-
+- labresults: the user wants results of tests ALREADY performed at the lab:
+  asking for them, asking if they are ready, asking why they are delayed
+  (تأخير / اتأخرت / لسه مجهزتش), or asking how to receive them.
+  
 - direct: greetings, thanks, small talk, opening hours, branch locations,
-  phone numbers, or general non-test conversation.
+  phone numbers, general non-test conversation, or questions about contracts
+  (التعاقدات) or approvals (الموافقات).
 
+
+==================================================
+INTENT DISAMBIGUATION (IMPORTANT)
+==================================================
+
+The last bot message and recent exchanges are used ONLY to resolve
+follow-up references (e.g. "yes", "that one", "how much is it?").
+They must NOT decide the intent by themselves.
+
+Decide the intent from what the user is asking NOW:
+
+- User names tests or asks about price, preparation, or availability
+  → 'inquiry', even if the previous topic was lab results.
+- User asks about a result that was already done (ready? delayed?
+  how to receive it?) → 'labresults'.
+- User asks about contracts or approvals (التعاقدات / الموافقات)
+  → 'direct', with refined_queries = [].
+- A short reply ("yes", "ok", "please") → follow the last bot message
+  to decide (e.g. bot offered a booking → 'visit').
+- Thanks or greetings → 'direct'.
 ==================================================
 BUNDLE DETECTION
 ==================================================
 
 Set `is_bundle_query = true` only if the user explicitly asks about
-comprehensive checkup bundles, package offers, or the details/price of a
-specific bundle. Otherwise set it to false.
+comprehensive checkup bundles, packages, or the details/price of a specific
+bundle. Otherwise set it to false.
 
 A request for tests related to a health concern is NOT a bundle query.
 
@@ -55,7 +80,9 @@ one of the following is involved:
 - an organ or system evaluation
 - a health concern, symptom, or condition for which the user wants tests
   (even if no test is named)
-- a specific named bundle
+
+Do NOT generate refined_queries for a bundle/package request. Bundles are global;
+their current names and prices come from AVAILABLE BUNDLES, not test search.
 
 Otherwise return refined_queries = [].
 
@@ -88,9 +115,8 @@ EXTRACTION RULES
 5. Organ/system requests: create ONE RefinedQuery for the organ's standard
    function panel, and list the component tests, related panel names, and
    Arabic terms in its aliases.
-6. Bundles: if is_bundle_query is true and no specific bundle is named,
-   refined_queries = []. If a specific bundle is named, create ONE RefinedQuery
-   for it.
+6. Bundles: never represent bundles as test RefinedQuery values. Use the global
+   AVAILABLE BUNDLES context to answer requests about named or unnamed bundles.
 
 ==================================================
 CONDITION / SYMPTOM RULES (NO TEST NAMED)

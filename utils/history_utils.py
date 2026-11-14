@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime
 from typing import Any
+from utils.timeutils import to_local
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ def format_chat_history(
 
         if timestamp:
             try:
-                dt = datetime.fromisoformat(timestamp)
+                dt = to_local(datetime.fromisoformat(timestamp))
                 formatted_timestamp = dt.strftime("%Y-%m-%d %H:%M")
                 time_prefix = f"[{formatted_timestamp}] "
             except (ValueError, TypeError):

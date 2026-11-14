@@ -70,7 +70,7 @@
         </td>
         <td>
           <span style="font-size: 0.78rem; color: var(--ink-500);">
-            {{ fb.created_at.strftime('%Y-%m-%d %H:%M') if fb.created_at else '—' }}
+            {{ fb.created_at|local_dt if fb.created_at else '—' }}
           </span>
         </td>
       </tr>

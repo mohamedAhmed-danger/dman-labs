@@ -144,3 +144,41 @@ def export_all_cities_price_list(laboratory_id: int) -> tuple[BytesIO, str]:
     filename = f"price_list_{safe_lab}_all_cities.xlsx"
 
     return buf, filename
+
+
+def export_test_prices(laboratory_id: int, city_id: int | None) -> tuple[BytesIO, str]:
+    """Export only row number, test name, and price for one or all cities."""
+    if city_id is None:
+        cities = City.query.filter_by(laboratory_id=laboratory_id).order_by(City.sort_order, City.id).all()
+        if not cities:
+            raise ValueError("لا توجد مناطق مسجّلة لهذا المعمل")
+    else:
+        city = db.session.get(City, city_id)
+        if not city:
+            raise ValueError("المدينة غير موجودة")
+        if city.laboratory_id != laboratory_id:
+            raise ValueError("المدينة لا تنتمي إلى هذا المعمل")
+        cities = [city]
+
+    laboratory = db.session.get(Laboratory, laboratory_id)
+    workbook = openpyxl.Workbook()
+    workbook.remove(workbook.active)
+
+    for city in cities:
+        worksheet = workbook.create_sheet(title=city.name[:31])
+        worksheet.append(["#", "Test Name", "Price"])
+        services = (
+            LabService.query
+            .filter_by(laboratory_id=laboratory_id, city_id=city.id)
+            .order_by(LabService.id.asc())
+            .all()
+        )
+        for row_number, service in enumerate(services, start=1):
+            worksheet.append([row_number, service.name, float(service.price)])
+
+    buffer = BytesIO()
+    workbook.save(buffer)
+    buffer.seek(0)
+    lab_name = (laboratory.name if laboratory else str(laboratory_id)).replace(" ", "_").replace("/", "-")
+    city_name = "all_cities" if city_id is None else cities[0].name.replace(" ", "_").replace("/", "-")
+    return buffer, f"test_prices_{lab_name}_{city_name}.xlsx"

@@ -6,6 +6,7 @@ import openpyxl
 
 from models.models import Complaint, Status, db
 from utils.excel_utils import format_excel_sheet
+from utils.timeutils import fmt_local
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ class ComplaintService:
             query = query.filter(
                 db.or_(
                     Complaint.phone_number.ilike(f'%{search}%'),
+                    Complaint.user_identity.ilike(f'%{search}%'), 
                     Complaint.complaint_text.ilike(f'%{search}%'),
                 )
             )
@@ -54,7 +56,7 @@ class ComplaintService:
         pagination = query.paginate(page=page, per_page=per_page, error_out=False)
         return pagination, "تم العثور على الشكاوى"
 
-    def update_complaint_status(self, new_status: Status, complaint_id=None):
+    def update_complaint_status(self, new_status: Status,resolution_text: str = None, complaint_id=None):
         """
         Update a complaint's status. Returns (Complaint or None, message string).
 
@@ -81,6 +83,8 @@ class ComplaintService:
             return None, "الشكوى غير موجودة"
         try:
             complaint.status = actual_status
+            if resolution_text is not None:
+                complaint.resolution_text = resolution_text
             db.session.commit()
             self._complaint = complaint
             self.complaint_id = complaint.id
@@ -90,7 +94,7 @@ class ComplaintService:
             logger.exception("[ComplaintService.update_complaint_status] Error")
             return None, "حدث خطأ أثناء تحديث الحالة"
 
-    def save_complaint(self, phone_number: str, complaint_text: str, comes_from: str = "unknown") -> ComplaintSaveResult:
+    def save_complaint(self, phone_number: str, complaint_text: str, comes_from: str = "unknown", user_identity: str = None) -> ComplaintSaveResult:
         """
         Register a new complaint. Returns a ComplaintSaveResult.
 
@@ -103,6 +107,7 @@ class ComplaintService:
                 phone_number=phone_number,
                 complaint_text=complaint_text,
                 comes_from=comes_from,
+                user_identity=user_identity
             )
             db.session.add(complaint)
             db.session.commit()
@@ -135,14 +140,15 @@ class ComplaintService:
         wb = openpyxl.Workbook()
         ws = wb.active
 
-        headers = ["رقم الهاتف", "الشكوى", "تاريخ الإنشاء", "المنصة", "الحالة"]
+        headers = ["رقم الهاتف", "هوية العميل", "الشكوى", "تاريخ الإنشاء", "المنصة", "الحالة"]
         rows = []
 
         for complaint in pagination.items:
             rows.append([
                 complaint.phone_number,
+                complaint.user_identity or "-",
                 complaint.complaint_text,
-                complaint.created_at.strftime('%Y-%m-%d %H:%M') if complaint.created_at else '',
+                fmt_local(complaint.created_at) if complaint.created_at else '',
                 complaint.comes_from or 'غير محدد',
                 complaint.status.value if complaint.status else 'Pending'
             ])
@@ -152,7 +158,7 @@ class ComplaintService:
             title="سجل الشكاوى",
             headers=headers,
             rows=rows,
-            status_col_idx=5
+            status_col_idx=6
         )
 
         output = BytesIO()

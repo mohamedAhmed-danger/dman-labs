@@ -2,10 +2,12 @@ import logging
 from typing import List, Optional
 
 from qdrant_client import QdrantClient
+from qdrant_client.http.models import FieldCondition, Filter, MatchValue
 
 from config import Config
 from schemas.search import SearchResult
 from utils.embedding_utils import build_embedding_text, create_embedding
+from services.shared.vector_service import get_collection_name
 
 logger = logging.getLogger(__name__)
 
@@ -37,13 +39,21 @@ def _create_query_embedding(search_text: str) -> list:
 def _query_qdrant(
     query_vector: list,
     limit: int,
+    laboratory_id: int,
+    city_id: int,
 ):
     """Query Qdrant and return the matching points."""
     client = get_qdrant_client()
     return client.query_points(
-        collection_name=Config.COLLECTION_NAME,
+        collection_name=get_collection_name(laboratory_id, city_id),
         query=query_vector,
         limit=limit,
+        query_filter=Filter(
+            must=[
+                FieldCondition(key="laboratory_id", match=MatchValue(value=laboratory_id)),
+                FieldCondition(key="city_id", match=MatchValue(value=city_id)),
+            ]
+        ),
     )
 
 
@@ -52,7 +62,7 @@ def _build_search_results(response) -> List[SearchResult]:
 
     return [
         SearchResult(
-            id=int(point.id),
+            id=int((point.payload or {}).get("service_id", point.id)),
             name=(point.payload or {}).get("name", ""),
             score = max(0.0, min(1.0, round(point.score, 3))),
             source="semantic",
@@ -66,9 +76,14 @@ def semantic_search(
     description: Optional[str] = None,
     keywords: Optional[List[str]] = None,
     limit: int = 3,
+    *,
+    laboratory_id: int,
+    city_id: int,
 ) -> List[SearchResult]:
     """Execute semantic vector search using Qdrant."""
 
+    if not laboratory_id or not city_id:
+        raise ValueError("laboratory_id and city_id are required for semantic search")
     if not query:
         return []
 
@@ -84,6 +99,8 @@ def semantic_search(
         response = _query_qdrant(
             query_vector,
             limit,
+            laboratory_id,
+            city_id,
         )
 
         return _build_search_results(response)
@@ -93,7 +110,7 @@ def semantic_search(
             "[SEARCH] Semantic search failed | query=%s",
             query,
         )
-        return []
+        raise
 
 
 def __getattr__(name: str):

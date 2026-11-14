@@ -1,5 +1,4 @@
 import logging
-from datetime import datetime
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -14,8 +13,10 @@ from services.domain.bundle_service import BundleService
 from utils.history_utils import get_chat_history
 from utils.llm_utils import extract_token_usage
 from utils.text_utils import detect_language_fallback, get_platform_name
-
+from utils.timeutils import now_local
 logger = logging.getLogger(__name__)
+
+OFFER_FLYER_MARKER = "LAB OFFER / BUNDLE FLYER"
 
 
 def booking_node(state: AgentState) -> dict:
@@ -41,7 +42,12 @@ def booking_node(state: AgentState) -> dict:
     current_summary = state.get("summary") or ""
     last_bot_message = state.get("last_bot_message") or ""
     matched_context = state.get("rag_context") or ""
-    is_bundle_query = state.get("is_bundle_query", False)
+
+    # Offer flyers must always load the bundles context, even if the classifier missed it.
+    is_bundle_query = (
+        state.get("is_bundle_query", False)
+        or OFFER_FLYER_MARKER in user_message
+    )
 
     # 2. Fetch dynamic Lab Info & Bundles Context from DB
     lab_name, lab_location, lab_desc = LaboratoryService.get_current_lab_info()
@@ -64,9 +70,7 @@ def booking_node(state: AgentState) -> dict:
     )
 
     # 4. Build the LLM prompt with dynamic Lab details & Bundles
-    current_time = datetime.now().strftime(
-        "Today is %A, %B %d, %Y. Current time is %I:%M %p"
-    )
+    current_time = now_local().strftime("%Y-%m-%d %H:%M:%S %Z")
 
     system_prompt = f"""
 {VISIT_SYSTEM_PROMPT}
@@ -129,26 +133,17 @@ Last bot message:
             sender_id,
         )
 
-        try:
-            from models.models import Lab
-            lab_obj = Lab.query.first()
-            lab_name_ar = lab_obj.name if (lab_obj and lab_obj.name) else "معامل ضمان"
-            lab_name_en = lab_obj.name if (lab_obj and lab_obj.name) else "Daman Labs"
-        except Exception:
-            lab_name_ar = "معامل ضمان"
-            lab_name_en = "Daman Labs"
-
         fallback = detect_language_fallback(
             user_message,
             arabic=(
                 f"عذرًا، حدث خطأ مؤقت أثناء معالجة طلبك ⚠️\n\n"
-                f"يرجى المحاولة مرة أخرى بعد قليل، أو يمكنك التواصل مباشرة مع خدمة عملاء {lab_name_ar} لمساعدتك فوراً عبر الرقم:\n"
+                f"يرجى المحاولة مرة أخرى بعد قليل، أو يمكنك التواصل مباشرة مع خدمة عملاء معامل الصدارة لمساعدتك فوراً عبر الرقم:\n"
                 f"📞 **01006446508**\n\n"
                 f"نحن في خدمتك دائمًا ✨"
             ),
             default=(
                 f"Apologies, a temporary error occurred while processing your request ⚠️\n\n"
-                f"Please try again in a moment, or contact {lab_name_en} customer service directly for assistance at:\n"
+                f"Please try again in a moment, or contact El Sadara Labs customer service directly for assistance at:\n"
                 f"📞 **01006446508**\n\n"
                 f"We are always happy to help! ✨"
             ),
@@ -205,7 +200,37 @@ Last bot message:
 
     # Save booking
     if tool_name == "save_visit_tool":
+        # Never trust the LLM for city_id: always take it from our own DB.
+        city_id = client_service.get_city_id()
+
+        if not city_id:
+            logger.warning(
+                "[BOOKING] Missing city_id | sender_id=%s",
+                sender_id,
+            )
+
+            reply = detect_language_fallback(
+                user_message,
+                arabic="عذرًا، محتاجين نتأكد من منطقتك الأول. ممكن تكتبلي اسم المدينة/المنطقة اللي هتتم فيها الزيارة؟",
+                default="Sorry, we need to confirm your region first. Could you tell me the city/area for the visit?",
+            )
+
+            return {
+                "response": reply,
+                "summary": current_summary,
+                "last_bot_message": reply,
+                "booking_saved": False,
+                "booking_reference": None,
+                "booking_pdf": None,
+                "booking_data": None,
+                "booking_usage": tokens,
+            }
+
         tool_args["comes_from"] = get_platform_name(platform_id)
+        tool_args["city_id"] = city_id
+        tool_args["page_id"] = page_id
+        tool_args["platform_id"] = platform_id
+        tool_args["sender_id"] = sender_id
 
         tool_result = save_visit_tool.invoke(tool_args)
 
@@ -222,38 +247,30 @@ Last bot message:
                 "date": tool_args.get("date"),
                 "time": tool_args.get("time"),
                 "comes_from": tool_args["comes_from"],
+                "city_id": city_id,
             }
-
-            try:
-                from models.models import Lab
-                lab_obj = Lab.query.first()
-                lab_name_ar = lab_obj.name if (lab_obj and lab_obj.name) else "معامل ضمان"
-                lab_name_en = lab_obj.name if (lab_obj and lab_obj.name) else "Daman Labs"
-            except Exception:
-                lab_name_ar = "معامل ضمان"
-                lab_name_en = "Daman Labs"
 
             reply = detect_language_fallback(
                 user_message,
                 arabic=(
                     f"تم استلام طلب حجزك بنجاح ✅\n\n"
                     f"📌 **رقم الطلب:** *{booking_reference}*\n\n"
-                    f"سيقوم فريق خدمة العملاء بـ {lab_name_ar} بالتواصل معك قريباً لتأكيد الموعد النهائي.\n\n"
+                    f"سيقوم فريق خدمة العملاء بمعامل الصدارة بالتواصل معك قريباً لتأكيد الموعد النهائي.\n\n"
                     f"مرفق أدناه تذكرة الحجز الخاصة بك 🎫"
                 ),
                 default=(
                     f"Your booking request has been successfully received ✅\n\n"
                     f"📌 **Reference ID:** *{booking_reference}*\n\n"
-                    f"Our customer service team at {lab_name_en} will contact you shortly to confirm the final appointment.\n\n"
+                    f"Our customer service team at El Sadara Labs will contact you shortly to confirm the final appointment.\n\n"
                     f"Here is your booking ticket below 🎫"
                 ),
             )
             updated_summary = (
-              f"{current_summary}\n\n"
-              f"--- BOOKING STATUS UPDATE ---\n"
-              f"✅ Visit booking confirmed & saved successfully\n "
-              f"Booked Tests: {tool_args.get('details')}\n"
-              f"Status: COMPLETED. Ready for any new inquiries or requests."
+                f"{current_summary}\n\n"
+                f"--- BOOKING STATUS UPDATE ---\n"
+                f"✅ Visit booking confirmed & saved successfully\n"
+                f"Booked Tests: {tool_args.get('details')}\n"
+                f"Status: COMPLETED. Ready for any new inquiries or requests."
             ).strip()
 
             return {

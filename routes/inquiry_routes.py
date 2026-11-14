@@ -2,7 +2,7 @@ import os
 from flask import Blueprint, request, render_template, flash, url_for, redirect, current_app
 from flask_login import login_required
 
-from models.models import Status
+from models.models import City, Status
 from services.domain.inquiry_service import InquiryService
 
 inquiries_bp = Blueprint('inquiries', __name__, url_prefix='/inquiries')
@@ -38,11 +38,16 @@ def list_inquiries():
     page = request.args.get('page', 1, type=int)
     search = request.args.get('search', '').strip()
     status = request.args.get('status', '')
+    city_id = request.args.get('city_id', type=int)
 
     inquiry_service = InquiryService()
     pagination, _ = inquiry_service.get_all_inquiries(
-        page=page, per_page=10, search=search or None, status=status or None
+        page=page, per_page=10, search=search or None, status=status or None,
+        city_id=city_id,
     )
+    if pagination is None:
+        flash("حدث خطأ أثناء جلب الاستفسارات.", "error")
+        return redirect(url_for('inquiries.list_inquiries'))
     for inq in pagination.items:
         _attach_image_info(inq)
 
@@ -54,6 +59,8 @@ def list_inquiries():
         pagination=pagination,
         search=search,
         status=status,
+        city_id=city_id,
+        cities=City.query.order_by(City.laboratory_id, City.sort_order, City.id).all(),
         statuses=Status,
         stats=stats,
     )
@@ -72,7 +79,6 @@ def inquiry_detail(inquiry_id):
     return render_template(
         'inquiries/detail.html',
         inquiry=result.inquiry,
-        discounts=InquiryService.DISCOUNTS,
     )
 
 

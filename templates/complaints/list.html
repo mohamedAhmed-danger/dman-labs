@@ -39,14 +39,14 @@
 <div class="card ts-filter-card">
   <form method="GET" action="{{ url_for('complaints.list_complaints') }}" class="ts-filter-form">
     <div class="ts-filter-field ts-filter-search">
-      <label class="ts-filter-label">بحث برقم الهاتف أو نص الشكوى</label>
+      <label class="ts-filter-label">بحث برقم الهاتف أو اسم العميل أو نص الشكوى</label>
       <div class="ts-input-icon-wrap">
         <i data-lucide="search" class="ts-input-icon"></i>
         <input
           type="text"
           name="search"
           value="{{ search or '' }}"
-          placeholder="ابحث برقم الهاتف أو الكلمات المفتاحية..."
+          placeholder="ابحث برقم الهاتف أو اسم العميل أو الكلمات المفتاحية..."
           class="form-control ts-input-with-icon">
       </div>
     </div>
@@ -88,6 +88,7 @@
       <tr>
         <th style="width: 70px;">#</th>
         <th style="width: 150px;">رقم الهاتف</th>
+        <th>هوية العميل (من المنصة)</th>
         <th>نص الشكوى أو الملاحظة</th>
         <th style="width: 140px;">تاريخ الإنشاء</th>
         <th style="width: 130px;">المنصة</th>
@@ -102,7 +103,13 @@
         <td>
           <div style="font-weight: 700; direction: ltr; text-align: right; color: var(--navy-900);">
             <i data-lucide="phone" style="width:13px;height:13px;vertical-align:-2px;color:var(--blue-600);"></i>
-            {{ c.phone_number }}
+            {{ c.phone_number or '-' }}
+          </div>
+        </td>
+        <td>
+          <div style="font-weight: 700; color: var(--navy-900);">
+            <i data-lucide="user" style="width:13px;height:13px;vertical-align:-2px;color:var(--blue-600);"></i>
+            <span dir="auto">{{ c.user_identity or '-' }}</span>
           </div>
         </td>
         <td>
@@ -113,7 +120,7 @@
         <td>
           <span style="font-size: 0.82rem; color: var(--ink-500);">
             <i data-lucide="clock" style="width: 12px; height: 12px; vertical-align: -2px;"></i>
-            {{ c.created_at.strftime('%Y-%m-%d %H:%M') if c.created_at else '—' }}
+            {{ c.created_at|local_dt if c.created_at else '—' }}
           </span>
         </td>
         <td>
@@ -123,24 +130,31 @@
           </span>
         </td>
         <td style="text-align: center;">
-          <form action="{{ url_for('complaints.update_complaint_status', complaint_id=c.id) }}" method="POST" style="margin: 0;">
-            <select name="status_val" onchange="this.form.submit()" class="form-control" style="height: 32px; padding: 2px 8px; font-size: 0.8rem; font-weight: 700; border-radius: 6px;
+          <form id="status-form-{{ c.id }}" action="{{ url_for('complaints.update_complaint_status', complaint_id=c.id) }}" method="POST" style="margin: 0;">
+    <select name="status_val" 
+            onfocus="this.setAttribute('data-old', this.value);"
+            onchange="handleStatusChange(this, '{{ c.id }}')" 
+            class="form-control" 
+            style="height: 32px; padding: 2px 8px; font-size: 0.8rem; font-weight: 700; border-radius: 6px;
               {% if c.status.name == 'PENDING' %}background:#fef3c7; color:#b45309; border-color:#fde68a;
               {% elif c.status.name == 'REVIEWED' %}background:#dbeafe; color:#1d4ed8; border-color:#bfdbfe;
               {% elif c.status.name == 'ATTENDED' %}background:#dcfce7; color:#15803d; border-color:#bbf7d0;
               {% elif c.status.name == 'NO_SHOW' %}background:#fee2e2; color:#b91c1c; border-color:#fecaca;
               {% endif %}">
-              {% for s in Status %}
-              <option value="{{ s.value }}" {% if c.status == s %}selected{% endif %}>
-                {% if s.name == 'PENDING' %}قيد الانتظار
-                {% elif s.name == 'REVIEWED' %}تمت المعالجة
-                {% elif s.name == 'ATTENDED' %}تم المتابعة
-                {% elif s.name == 'NO_SHOW' %}مغلقة
-                {% else %}{{ s.value }}{% endif %}
-              </option>
-              {% endfor %}
-            </select>
-          </form>
+      {% for s in Status %}
+      <option value="{{ s.value }}" {% if c.status == s %}selected{% endif %}>
+        {% if s.name == 'PENDING' %}قيد الانتظار
+        {% elif s.name == 'REVIEWED' %}تمت المعالجة
+        {% elif s.name == 'ATTENDED' %}تم المتابعة
+        {% elif s.name == 'NO_SHOW' %}مغلقة
+        {% else %}{{ s.value }}{% endif %}
+      </option>
+      {% endfor %}
+    </select>
+    
+    <!-- حقل مخفي لحفظ التبرير الذي سيكتبه في النافذة المنبثقة -->
+    <input type="hidden" name="resolution_text" id="resolution-{{ c.id }}" value="">
+</form>
         </td>
         <td style="text-align: center;">
           <a href="{{ url_for('complaints.complaint_detail', complaint_id=c.id) }}" class="btn btn-outline ts-action-btn" style="padding: 7px 12px;" title="عرض النص كاملاً">
@@ -150,7 +164,7 @@
       </tr>
       {% else %}
       <tr>
-        <td colspan="7" style="text-align: center; padding: 56px 20px;">
+        <td colspan="8" style="text-align: center; padding: 56px 20px;">
           <div class="ts-empty-icon"><i data-lucide="check-circle-2"></i></div>
           <h4 style="font-size: 1.05rem; margin-bottom: 6px;">لا توجد شكاوى مسجلة</h4>
           <p style="color: var(--ink-500); font-size: 0.85rem;">جميع الطلبات والخدمات تعمل بصورة طبيعية ومستقرة.</p>
@@ -201,5 +215,60 @@
   </nav>
 </div>
 {% endif %}
+
+{% block scripts %}
+<style>
+/* تظبيط خط SweetAlert عشان يطابق الداشبورد */
+.swal-custom-popup {
+    font-family: 'Cairo', sans-serif !important;
+    border-radius: 12px !important;
+}
+</style>
+
+<script>
+function handleStatusChange(selectElement, complaintId) {
+    const selectedStatus = selectElement.value;
+    const oldStatus = selectElement.getAttribute('data-old');
+    const form = document.getElementById(`status-form-${complaintId}`);
+    const resolutionInput = document.getElementById(`resolution-${complaintId}`);
+
+    if (selectedStatus === 'Reviewed' || selectedStatus === 'REVIEWED') {
+        // تفعيل الحقل المخفي عشان يتبعت مع الفورم
+        resolutionInput.disabled = false; 
+        
+        Swal.fire({
+            title: 'تفاصيل معالجة الشكوى',
+            text: 'يرجى كتابة الإجراء الذي تم اتخاذه لحل هذه الشكوى:',
+            input: 'textarea',
+            inputPlaceholder: 'مثال: تم التواصل مع العميل وتحديد موعد جديد...',
+            showCancelButton: true,
+            confirmButtonText: 'حفظ وإغلاق',
+            cancelButtonText: 'إلغاء',
+            confirmButtonColor: '#2563eb', // اللون الأزرق بتاع الداشبورد
+            cancelButtonColor: '#64748b', // لون رمادي للإلغاء
+            customClass: {
+                popup: 'swal-custom-popup',
+            },
+            inputValidator: (value) => {
+                if (!value) {
+                    return 'يجب كتابة تبرير لمعالجة الشكوى!';
+                }
+            }
+        }).then((result) => {
+            if (result.isConfirmed) {
+                resolutionInput.value = result.value;
+                form.submit();
+            } else {
+                selectElement.value = oldStatus;
+            }
+        });
+    } else {
+        // ⚠️ مهم جداً: نعطل الحقل المخفي لو بنغير لحالة تانية عشان ميبعتش "نص فاضي" ويمسح التبرير القديم
+        resolutionInput.disabled = true;
+        form.submit();
+    }
+}
+</script>
+{% endblock %}
 
 {% endblock %}

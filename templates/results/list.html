@@ -1,0 +1,927 @@
+
+{% extends "base.html" %}
+
+{% block title %}طلبات النتائج — معامل ضمان{% endblock %}
+
+{% block topbar_title %}طلبات النتائج{% endblock %}
+
+{% block topbar_sub %}
+متابعة طلبات العملاء للاستعلام عن نتائج التحاليل الواردة من مختلف المنصات
+{% endblock %}
+
+{% block content %}
+
+<style>
+/* ========================================
+   CUSTOMER CELL
+======================================== */
+
+.ts-customer-cell {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    flex-wrap: wrap;
+}
+
+.ts-customer-name {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    font-weight: 700;
+    color: var(--navy-900);
+}
+
+.ts-customer-name svg,
+.ts-customer-name i {
+    width: 14px;
+    height: 14px;
+    color: var(--blue-600);
+    flex-shrink: 0;
+}
+
+.ts-customer-name span {
+    overflow-wrap: anywhere;
+}
+
+.ts-customer-details {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.ts-customer-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.ts-customer-unavailable {
+    color: var(--ink-500);
+    font-size: 12px;
+}
+
+/* ========================================
+   CONTACT BUTTONS
+======================================== */
+
+.ts-whatsapp-btn,
+.ts-messenger-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    padding: 7px 13px;
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    text-decoration: none;
+    white-space: nowrap;
+    border: 1px solid;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.ts-whatsapp-btn svg,
+.ts-whatsapp-btn i,
+.ts-messenger-btn svg,
+.ts-messenger-btn i {
+    width: 16px;
+    height: 16px;
+}
+
+/* WhatsApp */
+
+.ts-whatsapp-btn {
+    background: #f0fdf4;
+    border-color: #bbf7d0;
+    color: #15803d;
+}
+
+.ts-whatsapp-btn:hover {
+    background: #16a34a;
+    border-color: #16a34a;
+    color: #ffffff;
+    transform: translateY(-1px);
+}
+
+/* Facebook Messenger */
+
+.ts-messenger-btn {
+    background: #eff6ff;
+    border-color: #bfdbfe;
+    color: #1d4ed8;
+}
+
+.ts-messenger-btn:hover:not(:disabled) {
+    background: #2563eb;
+    border-color: #2563eb;
+    color: #ffffff;
+    transform: translateY(-1px);
+}
+
+.ts-messenger-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.ts-whatsapp-btn:focus-visible,
+.ts-messenger-btn:focus-visible {
+    outline: 3px solid #93c5fd;
+    outline-offset: 2px;
+}
+
+@media (max-width: 600px) {
+    .ts-customer-cell {
+        gap: 8px;
+    }
+
+    .ts-whatsapp-btn,
+    .ts-messenger-btn {
+        padding: 6px 10px;
+        font-size: 11px;
+    }
+}
+</style>
+
+
+<!-- ========================================
+     STATISTICS
+======================================== -->
+
+<div class="ts-stats-strip">
+
+    <div class="ts-stat-pill">
+        <div class="ts-stat-pill-icon si-amber">
+            <i data-lucide="file-check"></i>
+        </div>
+
+        <div>
+            <div class="ts-stat-pill-value">
+                {{ pagination.total if pagination else (results|length) }}
+            </div>
+
+            <div class="ts-stat-pill-label">
+                إجمالي طلبات النتائج
+            </div>
+        </div>
+    </div>
+
+    {% if search or status %}
+
+    <div class="ts-stat-pill">
+        <div class="ts-stat-pill-icon si-blue">
+            <i data-lucide="filter"></i>
+        </div>
+
+        <div>
+            <div class="ts-stat-pill-value">
+                {{ results|length }}
+            </div>
+
+            <div class="ts-stat-pill-label">
+                نتائج التصفية
+            </div>
+        </div>
+    </div>
+
+    {% endif %}
+
+</div>
+
+
+<!-- ========================================
+     SEARCH & FILTERS
+======================================== -->
+
+<div class="card ts-filter-card">
+
+    <form
+        method="GET"
+        action="{{ url_for('results.list_results') }}"
+        class="ts-filter-form"
+    >
+
+        <!-- Search -->
+
+        <div class="ts-filter-field ts-filter-search">
+
+            <label class="ts-filter-label" for="result-search">
+                بحث برقم الهاتف أو اسم العميل
+            </label>
+
+            <div class="ts-input-icon-wrap">
+
+                <i
+                    data-lucide="search"
+                    class="ts-input-icon"
+                ></i>
+
+                <input
+                    id="result-search"
+                    type="text"
+                    name="search"
+                    value="{{ search or '' }}"
+                    placeholder="ابحث برقم الهاتف أو الاسم..."
+                    class="form-control ts-input-with-icon"
+                >
+
+            </div>
+
+        </div>
+
+
+        <!-- Status Filter -->
+
+        <div class="ts-filter-field">
+
+            <label class="ts-filter-label" for="result-status">
+                حالة الطلب
+            </label>
+
+            <select
+                id="result-status"
+                name="status"
+                class="form-control"
+            >
+
+                <option value="">
+                    جميع الحالات
+                </option>
+
+                {% for s in Status %}
+
+                <option
+                    value="{{ s.value }}"
+                    {% if status == s.value %}selected{% endif %}
+                >
+
+                    {% if s.name == 'PENDING' %}
+                        قيد الانتظار (Pending)
+
+                    {% elif s.name == 'REVIEWED' %}
+                        تمت المعالجة (Reviewed)
+
+                    {% elif s.name == 'ATTENDED' %}
+                        تم المتابعة (Attended)
+
+                    {% elif s.name == 'NO_SHOW' %}
+                        مغلق (Closed)
+
+                    {% else %}
+                        {{ s.value }}
+                    {% endif %}
+
+                </option>
+
+                {% endfor %}
+
+            </select>
+
+        </div>
+
+
+        <!-- Filter Actions -->
+
+        <div class="ts-filter-actions">
+
+            <button
+                type="submit"
+                class="btn btn-primary ts-filter-btn"
+            >
+                <i data-lucide="filter"></i>
+                تصفية
+            </button>
+
+            {% if search or status %}
+
+            <a
+                href="{{ url_for('results.list_results') }}"
+                class="btn btn-ghost ts-filter-btn ts-filter-reset"
+                title="إعادة تعيين"
+            >
+                <i data-lucide="rotate-ccw"></i>
+            </a>
+
+            {% endif %}
+
+        </div>
+
+    </form>
+
+</div>
+
+
+<!-- ========================================
+     RESULTS TABLE
+======================================== -->
+
+<div class="table-wrap ts-table-wrap">
+
+    <table class="data-table ts-data-table">
+
+        <thead>
+            <tr>
+                <th style="width:70px;">
+                    #
+                </th>
+
+                <th>
+                    العميل (رقم الهاتف / الاسم)
+                </th>
+
+                <th style="width:160px;">
+                    المدينة
+                </th>
+
+                <th style="width:160px;">
+                    تاريخ الطلب
+                </th>
+
+                <th style="width:160px;text-align:center;">
+                    الحالة
+                </th>
+
+                <th style="width:100px;text-align:center;">
+                    حذف
+                </th>
+            </tr>
+        </thead>
+
+
+        <tbody>
+
+            {% for r in results %}
+
+            {% set identity = r.user_identity|default('', true)|string|trim %}
+
+            {% set fb = (
+                facebook_customers.get(r.id)
+                if facebook_customers is defined
+                else none
+            ) %}
+
+            {% set direct_link = (
+                messenger_links.get(r.id)
+                if messenger_links is defined
+                else none
+            ) %}
+
+            {% set digits = identity
+                |replace(' ', '')
+                |replace('+', '')
+                |replace('-', '')
+                |replace('(', '')
+                |replace(')', '')
+            %}
+
+            {% set is_whatsapp = (
+                digits.isdigit()
+                and (
+                    (
+                        digits|length == 11
+                        and digits[:3] in [
+                            '010', '011', '012', '015'
+                        ]
+                    )
+                    or
+                    (
+                        digits|length == 12
+                        and digits[:4] in [
+                            '2010', '2011', '2012', '2015'
+                        ]
+                    )
+                    or
+                    (
+                        digits|length == 14
+                        and digits[:6] in [
+                            '002010', '002011',
+                            '002012', '002015'
+                        ]
+                    )
+                )
+            ) %}
+
+            <tr>
+
+                <!-- ========================================
+                     REQUEST ID
+                ======================================== -->
+
+                <td>
+                    <span class="ts-id-chip">
+                        #{{ r.id }}
+                    </span>
+                </td>
+
+
+                <!-- ========================================
+                     CUSTOMER & CONTACT
+                ======================================== -->
+
+                <td>
+
+                    <div class="ts-customer-cell">
+
+                        <!-- Customer Identity -->
+
+                        <div class="ts-customer-details">
+
+                            <div class="ts-customer-name">
+
+                                <i data-lucide="user"></i>
+
+                                <span dir="auto">
+                                    {% if fb and fb.name %}
+                                        {{ fb.name }}
+                                    {% else %}
+                                        {{ identity or 'غير معروف' }}
+                                    {% endif %}
+                                </span>
+
+                            </div>
+
+                        </div>
+
+
+                        <!-- Contact Actions -->
+
+                        <div class="ts-customer-actions">
+
+                            {% if fb %}
+
+                                <!-- ========================
+                                     FACEBOOK MESSENGER
+                                ======================== -->
+
+                                {% if direct_link
+                                    and direct_link.startswith(
+                                        'https://business.facebook.com/latest/inbox/'
+                                    )
+                                %}
+
+                                    <!-- Verified Direct Conversation -->
+
+                                    <a
+                                        href="{{ direct_link }}"
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        class="ts-messenger-btn"
+                                        title="فتح محادثة العميل المحددة"
+                                    >
+                                        <i data-lucide="message-circle"></i>
+                                        <span>ماسنجر</span>
+                                    </a>
+
+                                {% elif fb.page_id %}
+
+                                    <!-- General Page Inbox Fallback -->
+
+                                    <a
+                                        href="https://business.facebook.com/latest/inbox/all/?asset_id={{ fb.page_id|urlencode }}&amp;mailbox_id={{ fb.page_id|urlencode }}"
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        class="ts-messenger-btn"
+                                        title="فتح صندوق رسائل الصفحة فقط، وليس محادثة العميل"
+                                    >
+                                        <i data-lucide="inbox"></i>
+                                        <span>صندوق الرسائل</span>
+                                    </a>
+
+                                {% else %}
+
+                                    <span class="ts-customer-unavailable">
+                                        رابط ماسنجر غير متاح
+                                    </span>
+
+                                {% endif %}
+
+
+                            {% elif is_whatsapp %}
+
+                                <!-- ========================
+                                     WHATSAPP
+                                ======================== -->
+
+                                <button
+                                    type="button"
+                                    class="ts-whatsapp-btn"
+                                    data-phone="{{ identity }}"
+                                    onclick="openCustomerWhatsApp(this.dataset.phone)"
+                                    title="فتح محادثة واتساب للعميل"
+                                >
+                                    <i data-lucide="message-circle"></i>
+                                    <span>واتساب</span>
+                                </button>
+
+
+                            {% else %}
+
+                                <!-- ========================
+                                     UNKNOWN PLATFORM
+                                ======================== -->
+
+                                <span class="ts-customer-unavailable">
+                                    المنصة غير محددة
+                                </span>
+
+                            {% endif %}
+
+                        </div>
+
+                    </div>
+
+                </td>
+
+
+                <!-- ========================================
+                     CITY
+                ======================================== -->
+
+                <td>
+
+                    <span
+                        class="status-chip"
+                        style="
+                            background:rgba(37,99,235,0.08);
+                            color:var(--blue-600);
+                            font-weight:600;
+                        "
+                    >
+
+                        <i
+                            data-lucide="map-pin"
+                            style="width:11px;height:11px;"
+                        ></i>
+
+                        {{ r.city.name if r.city else 'غير محدد' }}
+
+                    </span>
+
+                </td>
+
+
+                <!-- ========================================
+                     CREATED AT
+                ======================================== -->
+
+                <td>
+
+                    <span
+                        style="
+                            font-size:0.82rem;
+                            color:var(--ink-500);
+                        "
+                    >
+
+                        <i
+                            data-lucide="clock"
+                            style="
+                                width:12px;
+                                height:12px;
+                                vertical-align:-2px;
+                            "
+                        ></i>
+
+                        {{ r.created_at.strftime('%Y-%m-%d %H:%M') if r.created_at else '—' }}
+
+                    </span>
+
+                </td>
+
+
+                <!-- ========================================
+                     STATUS
+                ======================================== -->
+
+                <td style="text-align:center;">
+
+                    <form
+                        action="{{ url_for('results.update_result_status', request_id=r.id) }}"
+                        method="POST"
+                        style="margin:0;"
+                    >
+
+                        <select
+                            name="status_val"
+                            onchange="this.form.submit()"
+                            class="form-control"
+                            style="
+                                height:32px;
+                                padding:2px 8px;
+                                font-size:0.8rem;
+                                font-weight:700;
+                                border-radius:6px;
+
+                                {% if r.status.name == 'PENDING' %}
+                                    background:#fef3c7;
+                                    color:#b45309;
+                                    border-color:#fde68a;
+
+                                {% elif r.status.name == 'REVIEWED' %}
+                                    background:#dbeafe;
+                                    color:#1d4ed8;
+                                    border-color:#bfdbfe;
+
+                                {% elif r.status.name == 'ATTENDED' %}
+                                    background:#dcfce7;
+                                    color:#15803d;
+                                    border-color:#bbf7d0;
+
+                                {% elif r.status.name == 'NO_SHOW' %}
+                                    background:#fee2e2;
+                                    color:#b91c1c;
+                                    border-color:#fecaca;
+                                {% endif %}
+                            "
+                        >
+
+                            {% for s in Status %}
+
+                            <option
+                                value="{{ s.value }}"
+                                {% if r.status == s %}selected{% endif %}
+                            >
+
+                                {% if s.name == 'PENDING' %}
+                                    قيد الانتظار
+
+                                {% elif s.name == 'REVIEWED' %}
+                                    تمت المعالجة
+
+                                {% elif s.name == 'ATTENDED' %}
+                                    تم المتابعة
+
+                                {% elif s.name == 'NO_SHOW' %}
+                                    مغلق
+
+                                {% else %}
+                                    {{ s.value }}
+                                {% endif %}
+
+                            </option>
+
+                            {% endfor %}
+
+                        </select>
+
+                    </form>
+
+                </td>
+
+
+                <!-- ========================================
+                     DELETE REQUEST
+                ======================================== -->
+
+                <td style="text-align:center;">
+
+                    <form
+                        action="{{ url_for('results.delete_result', request_id=r.id) }}"
+                        method="POST"
+                        style="margin:0;"
+                        onsubmit="return confirm('هل أنت متأكد من حذف هذا الطلب؟ لا يمكن التراجع عن هذا الإجراء.');"
+                    >
+
+                        <button
+                            type="submit"
+                            class="btn btn-danger ts-action-btn"
+                            style="padding:7px 12px;"
+                            title="حذف الطلب"
+                        >
+                            <i
+                                data-lucide="trash-2"
+                                style="width:15px;height:15px;"
+                            ></i>
+                        </button>
+
+                    </form>
+
+                </td>
+
+            </tr>
+
+
+            {% else %}
+
+            <!-- ========================================
+                 EMPTY STATE
+            ======================================== -->
+
+            <tr>
+                <td
+                    colspan="6"
+                    style="
+                        text-align:center;
+                        padding:56px 20px;
+                    "
+                >
+
+                    <div class="ts-empty-icon">
+                        <i data-lucide="check-circle-2"></i>
+                    </div>
+
+                    <h4
+                        style="
+                            font-size:1.05rem;
+                            margin-bottom:6px;
+                        "
+                    >
+                        لا توجد طلبات نتائج
+                    </h4>
+
+                    <p
+                        style="
+                            color:var(--ink-500);
+                            font-size:0.85rem;
+                        "
+                    >
+                        لم يطلب أي عميل الاستعلام عن نتيجة حتى الآن.
+                    </p>
+
+                </td>
+            </tr>
+
+            {% endfor %}
+
+        </tbody>
+
+    </table>
+
+</div>
+
+
+<!-- ========================================
+     PAGINATION
+======================================== -->
+
+{% if pagination and pagination.pages > 1 %}
+
+<div class="pagination-wrapper">
+
+    <div class="pagination-info">
+
+        عرض
+
+        {{ (pagination.page - 1) * pagination.per_page + 1 }}
+
+        إلى
+
+        {{ [
+            pagination.page * pagination.per_page,
+            pagination.total
+        ]|min }}
+
+        من إجمالي {{ pagination.total }} طلب
+
+    </div>
+
+
+    <nav class="pagination">
+
+        <!-- Previous -->
+
+        {% if pagination.has_prev %}
+
+        <a
+            href="{{ url_for(
+                'results.list_results',
+                page=pagination.prev_num,
+                search=search,
+                status=status
+            ) }}"
+            class="pagination-btn"
+            title="الصفحة السابقة"
+        >
+            <i data-lucide="chevron-right"></i>
+            السابق
+        </a>
+
+        {% else %}
+
+        <span class="pagination-btn disabled">
+            <i data-lucide="chevron-right"></i>
+            السابق
+        </span>
+
+        {% endif %}
+
+
+        <!-- Page Numbers -->
+
+        {% for p in pagination.iter_pages(
+            left_edge=1,
+            right_edge=1,
+            left_current=2,
+            right_current=2
+        ) %}
+
+            {% if p %}
+
+                {% if p == pagination.page %}
+
+                    <span class="pagination-page active">
+                        {{ p }}
+                    </span>
+
+                {% else %}
+
+                    <a
+                        href="{{ url_for(
+                            'results.list_results',
+                            page=p,
+                            search=search,
+                            status=status
+                        ) }}"
+                        class="pagination-page"
+                    >
+                        {{ p }}
+                    </a>
+
+                {% endif %}
+
+            {% else %}
+
+                <span class="pagination-ellipsis">
+                    …
+                </span>
+
+            {% endif %}
+
+        {% endfor %}
+
+
+        <!-- Next -->
+
+        {% if pagination.has_next %}
+
+        <a
+            href="{{ url_for(
+                'results.list_results',
+                page=pagination.next_num,
+                search=search,
+                status=status
+            ) }}"
+            class="pagination-btn"
+            title="الصفحة التالية"
+        >
+            التالي
+            <i data-lucide="chevron-left"></i>
+        </a>
+
+        {% else %}
+
+        <span class="pagination-btn disabled">
+            التالي
+            <i data-lucide="chevron-left"></i>
+        </span>
+
+        {% endif %}
+
+    </nav>
+
+</div>
+
+{% endif %}
+
+
+<!-- ========================================
+     WHATSAPP JAVASCRIPT
+======================================== -->
+
+<script>
+function openCustomerWhatsApp(identity) {
+    let phone = String(identity || "")
+        .replace(/\D/g, "");
+
+    // Convert international 0020 prefix
+    if (phone.startsWith("0020")) {
+        phone = phone.slice(2);
+    }
+
+    // Convert Egyptian local number
+    if (/^01[0125]\d{8}$/.test(phone)) {
+        phone = "2" + phone;
+    }
+
+    // Validate Egyptian mobile number
+    if (!/^201[0125]\d{8}$/.test(phone)) {
+        alert("رقم الهاتف غير صالح لفتح واتساب");
+        return;
+    }
+
+    const whatsappUrl = `https://wa.me/${phone}`;
+
+    window.open(
+        whatsappUrl,
+        "_blank",
+        "noopener,noreferrer"
+    );
+}
+</script>
+
+{% endblock %}

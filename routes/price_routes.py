@@ -6,7 +6,7 @@ from services.domain.price_import_service import (
     get_import_progress,
     retry_pending,
 )
-from services.domain.price_export_service import export_prices_excel
+from services.domain.price_export_service import export_city_price_list
 
 price_bp = Blueprint("price", __name__, url_prefix="/prices")
 
@@ -30,12 +30,13 @@ def import_preview():
             return jsonify({"error": "يرجى اختيار المنطقة"}), 400
 
         result = preview_import(
-            file=file,
+            file_obj=file,
+            filename=file.filename,
             laboratory_id=laboratory_id,
             city_id=city_id,
             delete_missing=delete_missing
         )
-        if "error" in result:
+        if result.get("error"):
             return jsonify({"error": result["error"]}), 400
 
         return jsonify(result)
@@ -49,7 +50,6 @@ def import_commit():
     data = request.get_json(silent=True) or {}
     token = data.get("token")
     city_id = data.get("city_id")
-    laboratory_id = data.get("laboratory_id", 1)
     delete_missing = bool(data.get("delete_missing", False))
     generate_ai = bool(data.get("generate_ai", True))
 
@@ -59,12 +59,11 @@ def import_commit():
     try:
         result = commit_import(
             token=token,
-            laboratory_id=int(laboratory_id),
             city_id=int(city_id),
             delete_missing=delete_missing,
             generate_ai=generate_ai
         )
-        if "error" in result:
+        if result.get("error"):
             return jsonify({"error": result["error"]}), 400
 
         return jsonify(result)
@@ -90,7 +89,10 @@ def export_prices():
     if not city_id:
         return jsonify({"error": "يرجى اختيار المنطقة للتصدير"}), 400
 
-    excel_io, filename = export_prices_excel(laboratory_id=laboratory_id, city_id=city_id)
+    excel_io, filename = export_city_price_list(
+        laboratory_id=laboratory_id,
+        city_id=city_id,
+    )
     if not excel_io:
         return jsonify({"error": "تعذر إنشاء ملف التصدير"}), 500
 

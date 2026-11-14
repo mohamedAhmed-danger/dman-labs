@@ -10,7 +10,9 @@ from platforms.waha.handler import WahaHandler
 from platforms.waha.parser import parse_waha_message
 from schemas.incoming_message import IncomingMessage
 from services.shared.subscription_service import SubscriptionService
+from services.shared.subscription_consumer import consume_subscription
 from services.domain.page_service import PageService
+from services.messaging.client_service import ClientService
 from services.messaging.message_processor import run_agent
 from services.messaging.redis_queue import get_redis_client, enqueue_message
 from notification_center import send_production_alert
@@ -100,6 +102,39 @@ def dispatch_incoming_message(
                 return
 
             handler = get_handler(platform_id, page)
+            client_service = ClientService(
+                platform_id=platform_id,
+                page_id=page_id,
+                sender_id=message.sender_id,
+            )
+            client = client_service.get_or_create_client()
+            
+            if not client.city_id:
+                handler.send_typing(message.sender_id)
+
+                reply, pdf_bytes, visit_reference = run_agent(
+                    message,
+                    laboratory_id=laboratory_id,
+                )
+
+                if reply:
+                    _send_reply(
+                        handler,
+                        message.sender_id,
+                        reply,
+                        pdf_bytes,
+                        visit_reference,
+                    )
+
+                    # Deduct one message from subscription
+                    consume_subscription(
+                        message=message,
+                        count=1,
+                    )
+
+                return
+
+
             result = handler.prepare(message)
             if not result:
                 return
@@ -120,6 +155,8 @@ def dispatch_incoming_message(
                     text=result.text,
                     received_at=getattr(message, "received_at", None),
                     image_result=result.image_result,
+                    sender_name=getattr(message, "sender_name", None),
+                    sender_phone=getattr(message, "sender_phone", None),
                 )
 
         except Exception as e:
@@ -160,6 +197,14 @@ def _process_facebook_entry(entry: dict, fb_platform_id: int, app):
 
     # 1. Direct user messaging events
     for messaging in entry.get("messaging", []):
+        message_id = messaging.get("message", {}).get("mid")
+        if message_id and not _claim_facebook_message(page_id_str, message_id):
+            logger.info(
+                "[FB WEBHOOK] Skipping duplicate message | page_id=%s | mid=%s",
+                page_id_str, message_id,
+            )
+            continue
+
         messages = parse_facebook_message(
             messaging=messaging,
             page_id=page_id_str,
@@ -177,12 +222,92 @@ def _process_facebook_entry(entry: dict, fb_platform_id: int, app):
 
     # 2. Page feed changes (Facebook Comments)
     for change in entry.get("changes", []):
-        comment_info = parse_facebook_comment(change)
-        if comment_info and comment_info.get("comment_id"):
-            comment_id = comment_info["comment_id"]
-            target_page_id = comment_info.get("page_id") or page_id_str
-            logger.debug("[FB WEBHOOK] Processing comment: %s", comment_id)
+        value = change.get("value") or {}
+        sender = value.get("from") or {}
+        logger.info(
+            "[FB COMMENT] change received | page=%s field=%s item=%s verb=%s "
+            "comment_id=%s parent_id=%s post_id=%s from=%s",
+            page_id_str, change.get("field"), value.get("item"), value.get("verb"),
+            value.get("comment_id"), value.get("parent_id"), value.get("post_id"),
+            sender.get("id"),
+        )
+
+        try:
+            comment_info = parse_facebook_comment(change)
+        except Exception:
+            logger.exception("[FB COMMENT] parser crashed | page=%s", page_id_str)
+            continue
+
+        if not comment_info:
+            logger.info(
+                "[FB COMMENT] SKIPPED by parser | field=%s item=%s verb=%s",
+                change.get("field"), value.get("item"), value.get("verb"),
+            )
+            continue
+
+        comment_id = comment_info.get("comment_id")
+        if not comment_id:
+            logger.warning("[FB COMMENT] SKIPPED: parser returned no comment_id | info=%s", comment_info)
+            continue
+
+        # الصفحة بترد على نفسها: نتخطى
+        if str(sender.get("id", "")) == page_id_str:
+            logger.info("[FB COMMENT] SKIPPED: comment from the page itself | comment_id=%s", comment_id)
+            continue
+
+        # نفس التعليق ممكن يوصل أكتر من مرة (retry من فيسبوك)
+        if not _claim_facebook_comment(page_id_str, comment_id):
+            logger.info("[FB COMMENT] SKIPPED: duplicate | comment_id=%s", comment_id)
+            continue
+
+        target_page_id = comment_info.get("page_id") or page_id_str
+        logger.info("[FB COMMENT] Processing | comment_id=%s target_page=%s", comment_id, target_page_id)
+        try:
             handler.handle_comment(comment_id=comment_id, page_id=target_page_id)
+        except Exception as e:
+            logger.exception("[FB COMMENT] handle_comment crashed | comment_id=%s", comment_id)
+            send_production_alert(
+                subject="Facebook Comment Handler Exception",
+                body_or_error=e,
+                context={"comment_id": comment_id, "page_id": page_id_str},
+            )
+
+
+def _claim_facebook_message(page_id: str, message_id: str) -> bool:
+    """Atomically accept a Facebook message ID once, including across webhook retries."""
+    try:
+        redis_client = get_redis_client()
+        return bool(
+            redis_client.set(
+                f"facebook:webhook:message:{page_id}:{message_id}",
+                "1",
+                nx=True,
+                ex=24 * 60 * 60,
+            )
+        )
+    except Exception:
+        logger.exception(
+            "[FB WEBHOOK] Could not check duplicate message | page_id=%s | mid=%s",
+            page_id, message_id,
+        )
+        return True
+
+
+def _claim_facebook_comment(page_id: str, comment_id: str) -> bool:
+    """يقبل كل comment_id مرة واحدة بس (حماية من retries فيسبوك)."""
+    try:
+        redis_client = get_redis_client()
+        return bool(
+            redis_client.set(
+                f"facebook:webhook:comment:{page_id}:{comment_id}",
+                "1",
+                nx=True,
+                ex=24 * 60 * 60,
+            )
+        )
+    except Exception:
+        logger.exception("[FB COMMENT] Could not check duplicate | comment_id=%s", comment_id)
+        return True
 
 
 def process_facebook_payload(payload: dict, app):

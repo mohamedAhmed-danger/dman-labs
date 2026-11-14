@@ -43,9 +43,10 @@ def update_complaint_status(complaint_id):
     except ValueError:
         flash("حالة غير صحيحة", 'danger')
         return redirect(url_for('complaints.list_complaints'))
-
+    
+    resolution_text = request.form.get('resolution_text', '').strip() or None
     complaint_service = ComplaintService(complaint_id=complaint_id)
-    updated, message = complaint_service.update_complaint_status(status_enum)
+    updated, message = complaint_service.update_complaint_status(status_enum,resolution_text=resolution_text)
     flash(message, 'success' if updated else 'danger')
 
     return redirect(request.referrer or url_for('complaints.list_complaints'))

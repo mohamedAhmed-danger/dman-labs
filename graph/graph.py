@@ -1,4 +1,4 @@
-from langgraph.graph import END, StateGraph
+from langgraph.graph import END, START, StateGraph
 
 from graph.nodes.booking_node import booking_node
 from graph.nodes.complaint_node import complaint_node
@@ -7,6 +7,7 @@ from graph.nodes.inquiry_node import inquiry_node
 from graph.nodes.intent_node import intent_node
 from graph.nodes.rag_node import rag_node
 from graph.nodes.result_node import result_node
+from graph.nodes.region_guard_node import region_guard_node
 from graph.state import AgentState
 
 import utils.trace_logger as trace_logger
@@ -36,6 +37,14 @@ def route_intent(state: AgentState) -> str:
     return intent_str
 
 
+def route_after_region_guard(state: AgentState) -> str:
+    return state.get("region_guard_action") or "stop"
+
+
+def route_agent_entry(state: AgentState) -> str:
+    return "intent" if state.get("city_id") else "region_guard"
+
+
 def build_graph():
     graph = StateGraph(AgentState)
 
@@ -47,16 +56,31 @@ def build_graph():
     graph.add_node("inquiry", inquiry_node)
     graph.add_node("direct", direct_node)
     graph.add_node("labresults", result_node)
+    graph.add_node("region_guard", region_guard_node)
 
-    # Entry point
-    graph.set_entry_point("intent")
+    graph.add_conditional_edges(
+        START,
+        route_agent_entry,
+        {
+            "intent": "intent",
+            "region_guard": "region_guard",
+        },
+    )
 
-    # Intent → Workflow (تم تغيير المفتاح من 'booking' لـ 'visit' ليتطابق مع الـ Enum)
+    graph.add_conditional_edges(
+        "region_guard",
+        route_after_region_guard,
+        {
+            "stop": END,
+            "classify": "intent",
+        },
+    )
+
     graph.add_conditional_edges(
         "intent",
         route_intent,
         {
-            "visit": "rag",            # 👈 تعديل المفتاح لـ visit
+            "visit": "rag",
             "inquiry": "rag",
             "complaint": "complaint",
             "direct": "direct",
@@ -64,12 +88,11 @@ def build_graph():
         },
     )
 
-    # RAG → Workflow
     graph.add_conditional_edges(
         "rag",
         route_intent,
         {
-            "visit": "booking",        # 👈 تعديل المفتاح لـ visit
+            "visit": "booking",
             "inquiry": "inquiry",
         },
     )

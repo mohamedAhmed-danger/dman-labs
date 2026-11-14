@@ -65,6 +65,8 @@ def create_app(config_class=Config):
 
     # Initialize extensions
     db.init_app(app)
+    from utils.timeutils import fmt_local
+    app.add_template_filter(lambda dt, fmt="%Y-%m-%d %H:%M": fmt_local(dt, fmt, default="—"), "local_dt")
     Migrate(app, db)  
 
     login_manager = LoginManager()
@@ -97,7 +99,8 @@ def create_app(config_class=Config):
     app.register_blueprint(city_bp)
     app.register_blueprint(branch_bp)
     app.register_blueprint(price_bp)
-
+    from routes import results
+    app.register_blueprint(results.bp)
     # Context processor for sidebar badges and layout counters
     @app.context_processor
     def inject_global_counts():

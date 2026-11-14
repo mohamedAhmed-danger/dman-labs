@@ -14,6 +14,8 @@ from utils.llm_utils import extract_token_usage
 
 logger = logging.getLogger(__name__)
 
+OFFER_FLYER_MARKER = "LAB OFFER / BUNDLE FLYER"
+
 
 def inquiry_node(state: AgentState) -> dict:
     """
@@ -33,7 +35,12 @@ def inquiry_node(state: AgentState) -> dict:
     current_summary = state.get("summary") or ""
     last_bot_message = state.get("last_bot_message") or ""
     rag_context = state.get("rag_context") or ""
-    is_bundle_query = state.get("is_bundle_query", False)
+
+    # Offer flyers must always load the bundles context, even if the classifier missed it.
+    is_bundle_query = (
+        state.get("is_bundle_query", False)
+        or OFFER_FLYER_MARKER in user_message
+    )
 
     platform_id = state.get("platform_id")
     page_id = state.get("page_id")

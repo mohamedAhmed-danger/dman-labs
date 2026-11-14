@@ -62,6 +62,7 @@ logger = logging.getLogger(__name__)
 
 AI_RATE_LIMIT_DELAY = float(os.getenv("AI_RATE_LIMIT_DELAY", "1"))
 PREVIEW_TTL_SECONDS = 1800  # 30 minutes
+MAX_IMPORT_FILE_SIZE = 16 * 1024 * 1024
 
 # ---------------------------------------------------------------------------
 # Column aliases (lower-stripped matching)
@@ -106,6 +107,17 @@ def _read_excel(file_obj: IO[bytes]) -> tuple[list[str], list[list]]:
     if not rows:
         return [], []
     return [str(c) if c is not None else "" for c in rows[0]], [list(r) for r in rows[1:]]
+
+
+def _read_xls(file_obj: IO[bytes]) -> tuple[list[str], list[list]]:
+    import xlrd
+    workbook = xlrd.open_workbook(file_contents=file_obj.read())
+    sheet = workbook.sheet_by_index(0)
+    if sheet.nrows == 0:
+        return [], []
+    return [str(value) if value is not None else "" for value in sheet.row_values(0)], [
+        sheet.row_values(index) for index in range(1, sheet.nrows)
+    ]
 
 
 def _read_csv(file_obj: IO[bytes]) -> tuple[list[str], list[list]]:
@@ -201,6 +213,10 @@ def _progress_key(token: str) -> str:
     return f"import:progress:{token}"
 
 
+def _city_progress_key(city_id: int) -> str:
+    return f"import:city:{city_id}:latest"
+
+
 def _save_preview(token: str, data: dict) -> None:
     r = get_redis_client()
     r.set(_preview_key(token), json.dumps(data, ensure_ascii=False), ex=PREVIEW_TTL_SECONDS)
@@ -215,7 +231,7 @@ def _load_preview(token: str) -> dict | None:
 def _init_progress(token: str, total: int) -> None:
     r = get_redis_client()
     r.hset(_progress_key(token), mapping={
-        "total": total, "done": 0, "failed": 0, "pending": 0, "status": "running"
+        "total": total, "done": 0, "failed": 0, "pending": total, "status": "running"
     })
     r.expire(_progress_key(token), PREVIEW_TTL_SECONDS)
 
@@ -226,6 +242,8 @@ def _update_progress(token: str, done: int = 0, failed: int = 0) -> None:
         r.hincrby(_progress_key(token), "done", done)
     if failed:
         r.hincrby(_progress_key(token), "failed", failed)
+    if done or failed:
+        r.hincrby(_progress_key(token), "pending", -(done + failed))
 
 
 def _finish_progress(token: str) -> None:
@@ -247,6 +265,15 @@ def get_import_progress(token: str) -> dict:
     if not data:
         return {}
     return {k: int(v) if v.isdigit() else v for k, v in data.items()}
+
+
+def get_city_import_progress(city_id: int) -> dict:
+    """Return progress for the most recently committed import in a city."""
+    r = get_redis_client()
+    token = r.get(_city_progress_key(city_id))
+    if isinstance(token, bytes):
+        token = token.decode("utf-8")
+    return get_import_progress(token) if token else {}
 
 
 # ---------------------------------------------------------------------------
@@ -288,8 +315,21 @@ def preview_import(
 
     ext = (filename or "").rsplit(".", 1)[-1].lower()
     try:
-        if ext in ("xlsx", "xls"):
+        position = file_obj.tell()
+        file_obj.seek(0, 2)
+        file_size = file_obj.tell()
+        file_obj.seek(position)
+    except (AttributeError, OSError):
+        file_size = 0
+    if file_size > MAX_IMPORT_FILE_SIZE:
+        result["error"] = "حجم الملف أكبر من الحد المسموح (16 ميجابايت)"
+        return result
+
+    try:
+        if ext == "xlsx":
             headers, rows = _read_excel(file_obj)
+        elif ext == "xls":
+            headers, rows = _read_xls(file_obj)
         elif ext == "csv":
             headers, rows = _read_csv(file_obj)
         else:
@@ -329,6 +369,10 @@ def preview_import(
     for row_idx, row in enumerate(rows, start=2):
         raw_name = _cell_str(_get_cell(row, col_map, "name"))
         if not raw_name:
+            if any(_cell_str(value) for value in row):
+                result["needs_review"].append({
+                    "row": row_idx, "name": "", "reason": "اسم التحليل فارغ"
+                })
             continue
 
         # Fix 4: name length guard
@@ -414,7 +458,7 @@ def preview_import(
         ]
         result["would_delete"] = {
             "count": len(would_del_names),
-            "names": would_del_names[:20],
+            "names": would_del_names[:10],
         }
 
     token = uuid.uuid4().hex
@@ -485,7 +529,7 @@ def commit_import(
                     description=r.get("description"),
                     duration=r.get("duration"),
                     sample_type=r.get("sample_type"),
-                    sync_status="pending",  # will be set to 'ok' after embedding
+                    sync_status="pending" if generate_ai else "ok",
                 )
                 db.session.add(new_test)
                 db.session.flush()
@@ -552,6 +596,8 @@ def commit_import(
 
     if generate_ai and needs_embedding_ids:
         _init_progress(token, len(needs_embedding_ids))
+        r = get_redis_client()
+        r.set(_city_progress_key(city_id), token, ex=PREVIEW_TTL_SECONDS)
         # Run in a background thread using the Flask app context
         from app import create_app
         app = create_app()
@@ -564,6 +610,8 @@ def commit_import(
     else:
         _init_progress(token, 0)
         _finish_progress(token)
+        r = get_redis_client()
+        r.set(_city_progress_key(city_id), token, ex=PREVIEW_TTL_SECONDS)
 
     return result
 

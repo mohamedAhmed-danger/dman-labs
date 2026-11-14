@@ -8,6 +8,7 @@ from llm.llm import get_gemini
 from schemas.direct import DirectResponse
 from services.messaging.client_service import ClientService
 from services.domain.laboratory_service import LaboratoryService
+from services.domain.branch_service import BranchService
 from utils.history_utils import get_chat_history
 from utils.llm_utils import extract_token_usage
 
@@ -37,7 +38,13 @@ def direct_node(state: AgentState) -> dict:
     sender_id = state.get("sender_id")
 
     # 2. Fetch dynamic Lab Info from DB
-    lab_name, lab_location, lab_desc = LaboratoryService.get_current_lab_info()
+    lab_name, lab_location, lab_desc = LaboratoryService.get_current_lab_info(
+        state.get("laboratory_id")
+    )
+    branches_context = BranchService.format_city_branches_context(
+        state.get("laboratory_id"),
+        state.get("city_id"),
+    )
 
     # 3. Load recent conversation history
     client_service = ClientService(
@@ -67,6 +74,20 @@ Name: {lab_name}
 Location: {lab_location}
 Description: {lab_desc}
 
+====================
+CLIENT REGION BRANCHES
+====================
+{branches_context}
+
+Rules for branch details:
+- Use only these details. Never invent an address, phone number, or working hours.
+- If no branch phone is listed, say it is unavailable.
+- Any phone number listed here is the branch's Customer Service Number. It is
+  NEVER the customer's own number. Never offer it as the customer's contact
+  number for a booking or a complaint, and never ask the customer to confirm it.
+- Do not put it in the summary. If you must mention it, label it
+  "(Customer Service Number)".
+====================
 ====================
 MEMORY & CONTEXT
 ====================

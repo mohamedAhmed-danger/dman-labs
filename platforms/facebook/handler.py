@@ -14,9 +14,7 @@ logger = logging.getLogger(__name__)
 
 class FacebookHandler(BaseHandler):
     platform_id = 1
-    # النسخة من Config.FB_API_VERSION. الافتراضي هو القديم عشان السلوك ميتغيرش
-    # لحد ما تراجع الـ changelog وتحدّد النسخة الجديدة.
-    API_VERSION = getattr(Config, "FB_API_VERSION", "v19.0")
+    API_VERSION = Config.FB_API_VERSION
 
     MAX_FB_TEXT_LEN = 2000
 
@@ -140,9 +138,8 @@ class FacebookHandler(BaseHandler):
     def react_to_comment(self, comment_id: str):
         return fb_comments.react_to_comment(comment_id, self.base_url, self.headers)
 
-    def reply_to_comment(self, comment_id: str, static_message: str = "شكراً على تعليقك! راسلنا خاصةً للمساعدة. 🙏"):
+    def reply_to_comment(self, comment_id: str, static_message: str | None = None):
         return fb_comments.reply_to_comment(comment_id, self.base_url, self.headers, self.page_id, static_message)
-
     def send_private_reply(self, page_id, token: str, comment_id: str, text: str):
         return fb_comments.send_private_reply(page_id, token, comment_id, text, self.base_url)
 

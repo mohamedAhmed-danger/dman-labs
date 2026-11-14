@@ -7,7 +7,8 @@
 
 {% block topbar_actions %}
 <div class="topbar-actions-wrap">
-  <button type="button" class="btn btn-outline" id="exportPricesBtn">
+  {# Hidden for now (development only): export / import buttons
+  <button type="button" class="btn btn-outline" id="exportPricesBtn" data-city-id="{{ selected_city_id if selected_city_id else 'all' }}">
     <i data-lucide="download"></i>
     تصدير أسعار المنطقة
   </button>
@@ -15,6 +16,7 @@
     <i data-lucide="upload"></i>
     استيراد أسعار
   </button>
+  #}
   <a href="{{ url_for('test.create_test', city_id=selected_city_id) }}" class="btn btn-primary">
     <i data-lucide="plus-circle"></i>
     + إضافة تحليل جديد
@@ -41,12 +43,14 @@
     {% endfor %}
   </div>
 
+  {# Hidden for now (development only): indexing retry button
   {% if pending_count and pending_count > 0 %}
   <button type="button" class="btn btn-warning btn-sm ts-pending-retry-btn" id="retryPendingBtn">
     <i data-lucide="refresh-cw"></i>
     إعادة محاولة المعلّق ({{ pending_count }})
   </button>
   {% endif %}
+  #}
 </div>
 
 <!-- ── Quick Stats Strip ───────────────────────────────────── -->
@@ -73,6 +77,7 @@
     </div>
   </div>
 
+  {# Hidden for now (development only): indexing / processing stat
   {% if pending_count and pending_count > 0 %}
   <div class="ts-stat-pill">
     <div class="ts-stat-pill-icon si-amber"><i data-lucide="clock"></i></div>
@@ -82,6 +87,7 @@
     </div>
   </div>
   {% endif %}
+  #}
 </div>
 
 <!-- ── Search & Filter Bar ─────────────────────────────────── -->
@@ -106,6 +112,7 @@
       </div>
     </div>
 
+    {# Hidden for now: sync status (حالة الفهرسة) filter
     <div class="ts-filter-field">
       <label class="ts-filter-label">حالة الفهرسة</label>
       <select name="sync_status" class="form-control">
@@ -114,6 +121,7 @@
         <option value="pending" {% if sync_status == 'pending' %}selected{% endif %}>معلّق (Pending)</option>
       </select>
     </div>
+    #}
 
     <div class="ts-filter-field ts-filter-narrow">
       <label class="ts-filter-label">عرض بالصفحة</label>
@@ -163,11 +171,13 @@
             <div class="ts-test-avatar"><i data-lucide="test-tube-diagonal"></i></div>
             <div>
               <div class="ts-test-name-text">{{ service.name }}</div>
+              {# Hidden for now (development only): per-row "processing" badge
               {% if service.sync_status == 'pending' %}
               <span class="badge badge-warning ts-pending-badge" title="جاري توليد البيانات أو تحديث المتجهات بالخلفية">
                 <i data-lucide="clock" style="width:11px;height:11px;"></i> قيد المعالجة
               </span>
               {% endif %}
+              #}
             </div>
           </div>
         </td>
@@ -298,7 +308,7 @@
       <div style="display: flex; align-items: center; gap: 10px;">
         <div class="section-icon"><i data-lucide="upload-cloud"></i></div>
         <div>
-          <h3 class="modal-title">استيراد أسعار التحاليل من ملف Excel / PDF</h3>
+          <h3 class="modal-title">استيراد أسعار التحاليل من ملف Excel / CSV</h3>
           <p class="modal-subtitle">قم بتحديث أسعار أو إضافة فحوصات جديدة للمنطقة الحالية</p>
         </div>
       </div>
@@ -424,4 +434,237 @@
   </div>
 </div>
 
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const modal = document.getElementById('importModal');
+  const exportButton = document.getElementById('exportPricesBtn');          // may be null (button commented out)
+  const openImportButton = document.getElementById('openImportModalBtn');   // may be null (button commented out)
+  const previewForm = document.getElementById('importPreviewForm');
+  const nextButton = document.getElementById('importNextBtn');
+  const backButton = document.getElementById('importBackBtn');
+  const commitButton = document.getElementById('importCommitBtn');
+  const closeButton = document.getElementById('closeImportModalBtn');
+  const closeDoneButton = document.getElementById('importCloseDoneBtn');
+  const urls = {
+    export: {{ url_for('test.export_test_prices_route')|tojson }},
+    preview: {{ url_for('test.import_test_prices_preview')|tojson }},
+    commit: {{ url_for('test.import_test_prices_commit')|tojson }},
+    status: {{ url_for('test.import_test_prices_status')|tojson }}
+  };
+  let previewToken = null;
+  let pollTimer = null;
+
+  function refreshIcons() {
+    if (window.lucide) window.lucide.createIcons();
+  }
+
+  function showError(id, message) {
+    const box = document.getElementById(id);
+    box.textContent = message;
+    box.style.display = 'block';
+  }
+
+  function setStep(step) {
+    [1, 2, 3].forEach((number) => {
+      document.getElementById(`importStep${number}`).style.display = number === step ? 'block' : 'none';
+      document.getElementById(`stepIndicator${number}`).className = `import-step ${number <= step ? 'active' : ''}`;
+    });
+    backButton.style.display = step === 2 ? 'inline-block' : 'none';
+    nextButton.style.display = step === 1 ? 'inline-block' : 'none';
+    commitButton.style.display = step === 2 ? 'inline-block' : 'none';
+    closeDoneButton.style.display = step === 3 ? 'inline-block' : 'none';
+    refreshIcons();
+  }
+
+  function stopPolling() {
+    if (pollTimer) window.clearTimeout(pollTimer);
+    pollTimer = null;
+  }
+
+  function closeModal() {
+    stopPolling();
+    modal.classList.remove('open');
+  }
+
+  function resetModal() {
+    stopPolling();
+    previewToken = null;
+    previewForm.reset();
+    ['importStep1Error', 'importStep2Error', 'importFinalAlert', 'wouldDeleteBox', 'needsReviewBox'].forEach((id) => {
+      document.getElementById(id).style.display = 'none';
+    });
+    document.getElementById('importProgressBar').style.width = '0%';
+    document.getElementById('importProgressText').textContent = 'جاري المعالجة... 0%';
+    setStep(1);
+  }
+
+  // Guarded: these buttons are commented out in the topbar
+  if (exportButton) {
+    exportButton.addEventListener('click', () => {
+      const queryCity = new URLSearchParams(window.location.search).get('city_id');
+      const cityId = queryCity && queryCity !== '0' ? queryCity : (exportButton.dataset.cityId || 'all');
+      const url = new URL(urls.export, window.location.origin);
+      url.searchParams.set('city_id', cityId);
+      window.location.assign(url.toString());
+    });
+  }
+
+  if (openImportButton) {
+    openImportButton.addEventListener('click', () => {
+      resetModal();
+      modal.classList.add('open');
+      refreshIcons();
+    });
+  }
+
+  closeButton.addEventListener('click', closeModal);
+  closeDoneButton.addEventListener('click', () => {
+    closeModal();
+    window.location.reload();
+  });
+  modal.addEventListener('click', (event) => {
+    if (event.target === modal) closeModal();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && modal.classList.contains('open')) closeModal();
+  });
+
+  nextButton.addEventListener('click', async () => {
+    const fileInput = document.getElementById('importFileInput');
+    const citySelect = document.getElementById('importCitySelect');
+    const errorBox = document.getElementById('importStep1Error');
+    errorBox.style.display = 'none';
+    if (!previewForm.reportValidity()) return;
+    if (!fileInput.files.length) {
+      showError('importStep1Error', 'يرجى اختيار ملف أسعار أولاً');
+      return;
+    }
+
+    nextButton.disabled = true;
+    nextButton.textContent = 'جاري معاينة الملف...';
+    try {
+      const formData = new FormData(previewForm);
+      formData.set('generate_ai', document.getElementById('importGenerateAiCheck').checked ? 'true' : 'false');
+      formData.set('delete_missing', document.getElementById('importDeleteMissingCheck').checked ? 'true' : 'false');
+      const response = await fetch(urls.preview, { method: 'POST', body: formData });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'فشلت معاينة الملف');
+
+      previewToken = data.token;
+      document.getElementById('cntCreated').textContent = data.created || 0;
+      document.getElementById('cntUpdated').textContent = data.updated || 0;
+      document.getElementById('cntUnchanged').textContent = data.unchanged || 0;
+      document.getElementById('cntSkipped').textContent = (data.needs_review || []).length;
+      document.getElementById('cntNeedsReview').textContent = (data.needs_review || []).length;
+
+      const deleteBox = document.getElementById('wouldDeleteBox');
+      const wouldDelete = data.would_delete || { count: 0, names: [] };
+      deleteBox.style.display = wouldDelete.count ? 'block' : 'none';
+      document.getElementById('wouldDeleteCount').textContent = wouldDelete.count || 0;
+      document.getElementById('wouldDeleteNames').textContent = wouldDelete.names?.length
+        ? `أمثلة: ${wouldDelete.names.slice(0, 10).join('، ')}` : '';
+
+      const reviewBox = document.getElementById('needsReviewBox');
+      const reviewList = document.getElementById('needsReviewList');
+      const reviews = data.needs_review || [];
+      reviewList.innerHTML = reviews.map((item) =>
+        `<div>• الصف ${item.row}: <strong>${escapeHtml(item.name || 'بدون اسم')}</strong> — ${escapeHtml(item.reason || '')}</div>`
+      ).join('');
+      reviewBox.style.display = reviews.length ? 'block' : 'none';
+      setStep(2);
+    } catch (error) {
+      showError('importStep1Error', error.message || 'حدث خطأ أثناء معاينة الملف');
+    } finally {
+      nextButton.disabled = false;
+      nextButton.textContent = 'معاينة الملف';
+    }
+  });
+
+  backButton.addEventListener('click', () => setStep(1));
+
+  commitButton.addEventListener('click', async () => {
+    const errorBox = document.getElementById('importStep2Error');
+    errorBox.style.display = 'none';
+    commitButton.disabled = true;
+    commitButton.textContent = 'جاري البدء...';
+    try {
+      const response = await fetch(urls.commit, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({
+          token: previewToken,
+          city_id: Number(document.getElementById('importCitySelect').value),
+          delete_missing: document.getElementById('importDeleteMissingCheck').checked,
+          generate_ai: document.getElementById('importGenerateAiCheck').checked
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'فشلت عملية الاستيراد');
+      setStep(3);
+      pollStatus();
+    } catch (error) {
+      showError('importStep2Error', error.message || 'حدث خطأ أثناء تنفيذ الاستيراد');
+    } finally {
+      commitButton.disabled = false;
+      commitButton.textContent = 'تأكيد وتنفيذ الاستيراد';
+    }
+  });
+
+  async function pollStatus() {
+    const cityId = document.getElementById('importCitySelect').value;
+    const statusUrl = new URL(urls.status, window.location.origin);
+    statusUrl.searchParams.set('city_id', cityId);
+    try {
+      const response = await fetch(statusUrl);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'تعذر متابعة حالة الاستيراد');
+      const total = Number(data.total) || 0;
+      const done = Number(data.done) || 0;
+      const failed = Number(data.failed) || 0;
+      const pending = Number(data.pending) || 0;
+      const percent = total ? Math.round(((done + failed) / total) * 100) : 100;
+      document.getElementById('importProgressBar').style.width = `${percent}%`;
+      document.getElementById('importProgressText').textContent = `جاري المعالجة... ${percent}%`;
+      document.getElementById('statDone').textContent = done;
+      document.getElementById('statFailed').textContent = failed;
+      document.getElementById('statPending').textContent = pending;
+      document.getElementById('statTotal').textContent = total;
+      if (pending === 0) {
+        document.getElementById('importProgressText').textContent = 'اكتملت المعالجة';
+        document.getElementById('importFinalAlert').textContent = failed
+          ? `اكتمل الاستيراد مع ${failed} حالة فشل في المعالجة.`
+          : 'تم استيراد قائمة الأسعار ومعالجة الفحوصات بنجاح!';
+        document.getElementById('importFinalAlert').style.display = 'block';
+        refreshIcons();
+        return;
+      }
+    } catch (error) {
+      document.getElementById('importProgressText').textContent = error.message || 'تعذر متابعة حالة الاستيراد';
+    }
+    pollTimer = window.setTimeout(pollStatus, 1500);
+  }
+
+  function escapeHtml(value) {
+    const element = document.createElement('span');
+    element.textContent = value;
+    return element.innerHTML;
+  }
+});
+
+window.confirmDelete = function(form) {
+  if (window.confirm('هل أنت متأكد من حذف هذا التحليل؟')) form.submit();
+};
+
+window.toggleReviewList = function() {
+  const list = document.getElementById('needsReviewList');
+  const chevron = document.getElementById('reviewChevron');
+  if (!list) return;
+  const isHidden = list.style.display === 'none';
+  list.style.display = isHidden ? 'block' : 'none';
+  if (chevron) chevron.style.transform = isHidden ? 'rotate(180deg)' : 'rotate(0deg)';
+};
+</script>
 {% endblock %}

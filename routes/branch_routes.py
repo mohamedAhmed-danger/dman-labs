@@ -41,6 +41,7 @@ def create_branch():
                     "city_id": branch.city_id,
                     "name": branch.name,
                     "address": branch.address,
+                    "phone_number": branch.phone_number,
                     "working_hours": branch.working_hours,
                 }
             })
@@ -64,6 +65,7 @@ def edit_branch(branch_id):
 
     branch, message = branch_service.update_branch(
         branch_id=branch_id,
+        city_id=data.get("city_id"),
         name=data.get("name"),
         address=data.get("address"),
         phone_number=data.get("phone_number"),

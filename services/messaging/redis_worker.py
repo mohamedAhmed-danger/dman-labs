@@ -263,6 +263,11 @@ def _finish_processing(
     )
     return False
 
+
+# ============================================================================
+# Agent Input Builder
+# ============================================================================
+
 def build_agent_text(entries: list[dict]) -> str:
     """Builds the agent's input: user texts and numbered images, in their real arrival order."""
     lines: list[str] = []
@@ -274,18 +279,34 @@ def build_agent_text(entries: list[dict]) -> str:
         if image:
             image_no += 1
             status = image.get("status")
+
             if status == "valid":
                 tests = ", ".join(image.get("tests", []))
                 lines.append(f"[Image #{image_no} - OCR Extracted Tests]: {tests}")
+
             elif status == "pending":
                 lines.append(f"[Image #{image_no} - Prescription detected but unclear]")
+
+            elif status == "offer":
+                lines.append(f"[Image #{image_no} - LAB OFFER / BUNDLE FLYER]")
+                offers = image.get("offers") or []
+                if offers:
+                    for offer in offers:
+                        lines.append(
+                            f"- {offer['name']} | Price on flyer: {offer.get('price') or 'not shown'}"
+                        )
+                else:
+                    lines.append("- (offer name could not be read)")
+
             else:
                 lines.append(f"[Image #{image_no} - spam or irrelevant]")
 
-        elif entry.get("text"):
+        if entry.get("text"):
             lines.append(f"[User text]: {entry['text']}")
 
     return "\n".join(lines)
+
+
 # ============================================================================
 # Process Conversation
 # ============================================================================
@@ -338,6 +359,9 @@ def process_conversation(
             _require_ownership(r, conversation_key, owner_token, heartbeat_script)
             handler.send_typing(sender_id)
 
+            sender_name = next((e.get("sender_name") for e in entries if e.get("sender_name")), None)
+            sender_phone = next((e.get("sender_phone") for e in entries if e.get("sender_phone")), None)
+
             incoming = IncomingMessage(
                 sender_id=sender_id,
                 page_id=page_id,
@@ -345,6 +369,8 @@ def process_conversation(
                 platform_name=handler.platform_name,
                 msg_type="text",
                 text=combined_text,
+                sender_name=sender_name,
+                sender_phone=sender_phone,
             )
 
             reply, pdf_bytes, visit_reference = run_agent(

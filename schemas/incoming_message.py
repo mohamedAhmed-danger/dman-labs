@@ -24,6 +24,8 @@ class IncomingMessage(BaseModel):
     text: Optional[str] = None
     media: Optional[Any] = None
     received_at: float = Field(default_factory=time.time)
+    sender_name: Optional[str] = None
+    sender_phone: Optional[str] = None
 
     @field_validator("received_at", mode="before")
     @classmethod

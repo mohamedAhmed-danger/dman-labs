@@ -6,7 +6,7 @@
 {% block topbar_sub %}متابعة وتأكيد طلبات سحب العينات والزيارات المنزلية لحظياً{% endblock %}
 
 {% block topbar_actions %}
-<a href="{{ url_for('bookings.export_bookings', search=search, status=status, date_from=date_from, date_to=date_to) }}" class="btn btn-outline">
+<a href="{{ url_for('bookings.export_bookings', search=search, status=status, date_from=date_from, date_to=date_to, city_id=city_id) }}" class="btn btn-outline">
   <i data-lucide="file-spreadsheet"></i>
   تصدير إلى Excel
 </a>
@@ -53,14 +53,14 @@
 
   <form method="GET" action="{{ url_for('bookings.list_bookings') }}" class="ts-filter-form">
     <div class="ts-filter-field ts-filter-search">
-      <label class="ts-filter-label">بحث بالاسم أو الهاتف</label>
+      <label class="ts-filter-label">بحث برقم الهاتف أو اسم العميل</label>
       <div class="ts-input-icon-wrap">
         <i data-lucide="search" class="ts-input-icon"></i>
         <input
           type="text"
           name="search"
           value="{{ search or '' }}"
-          placeholder="ابحث باسم المريض أو رقم الهاتف..."
+          placeholder="ابحث برقم الهاتف أو اسم العميل..."
           class="form-control ts-input-with-icon">
       </div>
     </div>
@@ -77,6 +77,16 @@
           {% elif s.name == 'NO_SHOW' %}لم يحضر (No Show)
           {% else %}{{ s.value }}{% endif %}
         </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="ts-filter-field">
+      <label class="ts-filter-label">المنطقة</label>
+      <select name="city_id" class="form-control">
+        <option value="">كل المناطق</option>
+        {% for city in cities %}
+        <option value="{{ city.id }}" {% if city_id == city.id %}selected{% endif %}>{{ city.name }}</option>
         {% endfor %}
       </select>
     </div>
@@ -100,7 +110,7 @@
         <i data-lucide="filter"></i>
         تصفية
       </button>
-      {% if search or status or date_from or date_to %}
+      {% if search or status or date_from or date_to or city_id %}
       <a href="{{ url_for('bookings.list_bookings') }}" class="btn btn-ghost ts-filter-btn ts-filter-reset" title="إعادة تعيين البحث">
         <i data-lucide="rotate-ccw"></i>
       </a>
@@ -117,7 +127,9 @@
         <th style="width: 110px;">رقم المرجع</th>
         <th>اسم المريض</th>
         <th>رقم الهاتف</th>
+        <th>هوية العميل (من المنصة)</th>
         <th>الموعد والتوقيت</th>
+        <th>المنطقة</th>
         <th>المنصة</th>
         <th style="width: 170px; text-align: center;">حالة الحجز</th>
         <th style="width: 110px; text-align: center;">التفاصيل</th>
@@ -139,7 +151,13 @@
         </td>
         <td>
           <span style="font-size: 0.88rem; font-weight: 600; color: var(--ink-700); direction: ltr; display: inline-block;">
-            {{ b.phone_number }}
+            {{ b.phone_number or '-' }}
+          </span>
+        </td>
+        <td>
+          <span style="font-size: 0.88rem; font-weight: 600; color: var(--ink-700);">
+            <i data-lucide="user" style="width:13px;height:13px;vertical-align:-2px;color:var(--blue-600);"></i>
+            <span dir="auto">{{ b.user_identity or '-' }}</span>
           </span>
         </td>
         <td>
@@ -147,6 +165,11 @@
             <div style="font-weight: 700; color: var(--navy-900);"><i data-lucide="calendar" style="width:13px;height:13px;vertical-align:-2px;"></i> {{ b.date or '—' }}</div>
             {% if b.time %}<div style="color: var(--ink-500);"><i data-lucide="clock" style="width:12px;height:12px;vertical-align:-2px;"></i> {{ b.time }}</div>{% endif %}
           </div>
+        </td>
+        <td>
+          {% if b.city %}
+          <span class="status-chip" style="background: rgba(37,99,235,0.08); color: var(--blue-600);">{{ b.city.name }}</span>
+          {% endif %}
         </td>
         <td>
           <span class="status-chip" style="background: rgba(37,99,235,0.08); color: var(--blue-600); font-weight: 600;">
@@ -182,7 +205,7 @@
       </tr>
       {% else %}
       <tr>
-        <td colspan="7" style="text-align: center; padding: 56px 20px;">
+        <td colspan="9" style="text-align: center; padding: 56px 20px;">
           <div class="ts-empty-icon"><i data-lucide="calendar-x-2"></i></div>
           <h4 style="font-size: 1.05rem; margin-bottom: 6px;">لا توجد حجوزات مسجلة</h4>
           <p style="color: var(--ink-500); font-size: 0.85rem;">لم يتم العثور على أي طلبات حجز تطابق معايير البحث.</p>

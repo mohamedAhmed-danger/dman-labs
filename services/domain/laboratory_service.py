@@ -95,7 +95,7 @@ class LaboratoryService:
         """
         Update a laboratory's name, location or description.
 
-        Empty values are ignored, so a field cannot be cleared through this method.
+        Empty name/location values are ignored. An empty description clears it.
         Renaming to a name used by another laboratory is rejected.
         Returns (lab, message); lab is None on failure.
         """
@@ -120,8 +120,8 @@ class LaboratoryService:
                 lab.name = new_name
             if location:
                 lab.location = location
-            if description:
-                lab.description = description
+            if description is not None:
+                lab.description = description.strip() or None
 
             db.session.commit()
             self._lab = lab
@@ -172,17 +172,20 @@ class LaboratoryService:
 
 
     @staticmethod
-    def get_current_lab_info():
+    def get_current_lab_info(laboratory_id=None):
         """
-        Fetches primary laboratory name, location, and description for system prompts.
+        Fetches the requested laboratory's name, location, and description.
         """
         try:
-            lab = Lab.query.order_by(Lab.id.asc()).first()
+            lab_query = Lab.query
+            if laboratory_id:
+                lab_query = lab_query.filter_by(id=laboratory_id)
+            lab = lab_query.order_by(Lab.id.asc()).first()
             if not lab:
                 return (
-                    "معامل ضمان للتحاليل الطبية",
-                    "الإسكندرية",
-                    "معمل متخصص في جميع التحاليل الطبية والكيميائية"
+                    "Not available",
+                    "Not available",
+                    "Not available",
                 )
             
             return (
@@ -192,11 +195,7 @@ class LaboratoryService:
             )
         except Exception:
             logger.exception("[LaboratoryService.get_current_lab_info] failed")
-            return (
-                "معامل ضمان للتحاليل الطبية",
-                "الإسكندرية",
-                "معمل متخصص في التحاليل الطبية"
-            )    
+            return ("Not available", "Not available", "Not available")
 
 
         

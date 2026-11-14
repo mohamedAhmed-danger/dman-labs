@@ -52,7 +52,7 @@
       <div class="info-icon si-blue"><i data-lucide="calendar"></i></div>
       <div class="info-body">
         <div class="info-label">تاريخ البدء</div>
-        <div class="info-value">{{ subscription.start_date.strftime('%d %b %Y') if subscription.start_date else '—' }}</div>
+        <div class="info-value">{{ subscription.start_date|local_dt if subscription.start_date else '—' }}</div>
       </div>
     </div>
 
@@ -60,7 +60,7 @@
       <div class="info-icon si-purple"><i data-lucide="calendar-x"></i></div>
       <div class="info-body">
         <div class="info-label">تاريخ الانتهاء</div>
-        <div class="info-value">{{ subscription.end_date.strftime('%d %b %Y') if subscription.end_date else '—' }}</div>
+        <div class="info-value">{{ subscription.end_date|local_dt if subscription.end_date else '—' }}</div>
       </div>
     </div>
 
@@ -274,6 +274,7 @@
     {% if subscription.is_active %}
     <form action="{{ url_for('subscription.suspend_subscription') }}" method="POST"
           onsubmit="return confirm('هل أنت متأكد من إيقاف خدمة الذكاء الاصطناعي؟ لن يتم الرد على العملاء تلقائياً.');">
+      <input type="hidden" name="next" value="{{ request.path }}">
       <button type="submit" class="btn btn-danger">
         <i data-lucide="power-off"></i>
         إيقاف الذكاء الاصطناعي
@@ -282,6 +283,7 @@
     {% else %}
     <form action="{{ url_for('subscription.activate_subscription') }}" method="POST"
           onsubmit="return confirm('هل تريد إعادة تفعيل خدمة الذكاء الاصطناعي؟');">
+      <input type="hidden" name="next" value="{{ request.path }}">
       <button type="submit" class="btn btn-success">
         <i data-lucide="power"></i>
         تفعيل الذكاء الاصطناعي

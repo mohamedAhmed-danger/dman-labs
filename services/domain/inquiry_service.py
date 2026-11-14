@@ -6,11 +6,10 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from models.models import Inquiry, Status, db
+from models.models import Inquiry, LabService, Status, db
 from services.messaging.client_service import ClientService
 from services.domain.page_service import PageService
 from services.shared.platform_service import PlatformService
-from services.domain.tests_service import TestsService
 
 logger = logging.getLogger(__name__)
 
@@ -48,15 +47,18 @@ class InquiryService:
 
     # ── read ──────────────────────────────────────────────────────────────────
 
-    def get_all_inquiries(self, page=1, per_page=10, search=None, status=None):
+    def get_all_inquiries(self, page=1, per_page=10, search=None, status=None, city_id=None):
         """Fetch paginated inquiries filtered by search and status. Returns (Pagination or None, message)."""
         try:
             query = Inquiry.query
+            if city_id:
+                query = query.filter(Inquiry.city_id == city_id)
 
             if search:
                 query = query.filter(
                     db.or_(
                         Inquiry.phone_number.ilike(f'%{search}%'),
+                        Inquiry.user_identity.ilike(f'%{search}%'),
                         Inquiry.comes_from.ilike(f'%{search}%'),
                         Inquiry.services_mentioned.ilike(f'%{search}%'),
                     )
@@ -142,6 +144,7 @@ class InquiryService:
     def save_inquiry(
         self,
         laboratory_id: int,
+        city_id: int | None,
         phone_number: str,
         comes_from: str,
         prescription_img: str = None,
@@ -149,11 +152,13 @@ class InquiryService:
         confidence_score: float = None,
         services_mentioned: str = None,
         status: Status = Status.PENDING,
+        user_identity: str | None = None,
     ):
         """Persist a new prescription inquiry with OCR metadata. Returns an InquiryResult."""
         try:
             inquiry = Inquiry(
                 laboratory_id=laboratory_id,
+                city_id=city_id,
                 phone_number=phone_number,
                 comes_from=comes_from,
                 prescription_img=prescription_img,
@@ -162,6 +167,7 @@ class InquiryService:
                 services_mentioned=services_mentioned,
                 status=status,
                 created_at=datetime.now(timezone.utc),
+                user_identity=user_identity,
             )
             db.session.add(inquiry)
             db.session.commit()
@@ -244,11 +250,24 @@ class InquiryService:
         if not result.success:
             return None, None, result.message
 
-        selected_services = TestsService.get_services_by_ids(selected_service_ids)
+        inquiry = result.inquiry
+        if not inquiry.city_id:
+            return inquiry, None, "لا يمكن تأكيد الروشتة قبل تحديد منطقة العميل."
+        clean_ids = [int(item) for item in selected_service_ids if str(item).isdigit()]
+        selected_services = (
+            LabService.query.filter(
+                LabService.id.in_(clean_ids),
+                LabService.laboratory_id == inquiry.laboratory_id,
+                LabService.city_id == inquiry.city_id,
+            ).all()
+            if clean_ids else []
+        )
+        by_id = {service.id: service for service in selected_services}
+        selected_services = [by_id[item] for item in clean_ids if item in by_id]
         if not selected_services:
             return None, None, 'الخدمات المحددة غير صالحة.'
 
-        return result.inquiry, selected_services, None
+        return inquiry, selected_services, None
 
     def _dispatch_to_channel(self, comes_from: str, reply_text: str):
         """

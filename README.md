@@ -135,6 +135,7 @@ The application runtime is orchestrated through Flask's factory architecture and
     * `QDRANT_URL`, `QDRANT_API_KEY`, `COLLECTION_NAME`, `VECTOR_SIZE`: Qdrant vector database parameters.
     * `GEMINI_API_KEY`, `GEMINI_MODEL`, `EMBEDDING_MODEL`: Google Gemini generation and embedding configurations.
     * `ITEMS_PER_PAGE`: Global default pagination limit for administrative dashboard views.
+    * `FB_API_VERSION`: Facebook Graph API version used by Messenger and profile lookups (defaults to `v26.0`).
 
 ---
 
@@ -634,6 +635,8 @@ The relational schema is built on **SQLAlchemy ORM** ([`models/models.py`](model
    MYSQL_DB=elsadara_db
    # Optional full URI:
    # DATABASE_URL=mysql+pymysql://user:pass@localhost:3306/elsadara_db?charset=utf8mb4
+
+   FB_API_VERSION=v26.0
 
    QDRANT_URL=http://localhost:6333
    QDRANT_API_KEY=your_qdrant_api_key
