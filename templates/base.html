@@ -89,7 +89,12 @@
       <i data-lucide="layers" class="nav-icon"></i>
       الباقات الفحصية
     </a>
-
+        <a href="{{ url_for('discount.list_discounts') }}"
+       class="nav-item {% if request.endpoint in ['discount.list_discounts', 'discount.add_discount', 'discount.discount_detail'] %}active{% endif %}">
+      <i data-lucide="badge-percent" class="nav-icon"></i>
+      الخصومات
+    </a>
+    
     <a href="{{ url_for('feedbacks.list_feedbacks_page') }}"
        class="nav-item {% if request.endpoint in ['feedbacks.list_feedbacks_page'] %}active{% endif %}">
       <i data-lucide="star" class="nav-icon"></i>

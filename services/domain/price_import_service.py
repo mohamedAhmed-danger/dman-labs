@@ -1,41 +1,13 @@
 """
 price_import_service.py
 
-Two-phase import: preview → commit.
+Two-phase import: preview -> commit (Excel / CSV price lists per city).
 
-Column names (matched case-insensitively):
-    Required:   "Test Name" | "اسم التحليل" | "name"
-                "Price"     | "السعر"       | "price"
-    Optional:   "Test Details" | "تفاصيل التحليل" | "description"
-                "Duration"     | "وقت الاستلام"   | "duration"
-                "Sample Type"  | "نوع العينة"      | "sample_type"
-
-Preview:
-    - Parses the file; normalises names (strip + collapse whitespace + lowercase for matching).
-    - Returns {new, price_changed, unchanged, needs_review, warnings, token}.
-    - Saves parsed rows to Redis under a token (TTL 30 min).
-    - Duplicate name inside the file: last row wins (warning emitted).
-
-Commit:
-    - One DB transaction: creates new rows, updates price+description for existing.
-    - delete_missing=True → removes city tests absent from the file and their Qdrant points.
-    - After commit, AI generation + embedding run in a background thread.
-    - Background job progress is stored in Redis: import:progress:{token}.
-    - Returns {token, created, updated, deleted, total_for_ai}.
-
-Background job:
-    - Calls generate_test() only for rows where fields are missing.
-    - Rate-limited by AI_RATE_LIMIT_DELAY (default 1 s).
-    - Failed AI or embedding → test.sync_status = "pending".
-    - Successful embedding → test.sync_status = "ok".
-    - Batch upserts in chunks of 100.
-
-retry_pending(laboratory_id, city_id):
-    - Reprocesses all sync_status="pending" tests of that city.
-
-get_import_progress(token):
-    - Reads the Redis progress hash for a commit token.
+Required columns : "Test Name" | "اسم التحليل" | "name"   +   "Price" | "السعر" | "price"
+Optional columns : Test Details | Duration | Sample Type  (Arabic aliases supported)
 """
+import csv
+import io
 import json
 import logging
 import os
@@ -46,27 +18,24 @@ import uuid
 from io import BytesIO
 from typing import IO
 
-from sqlalchemy.exc import IntegrityError
+from flask import current_app
 
-from config import Config
 from models.models import db, LabService, City
 from services.shared.generation_service import generate_test
 from services.shared.vector_service import (
     upsert_test_vectors_batch,
     delete_test_vector,
-    get_collection_name,
 )
 from services.messaging.redis_queue import get_redis_client
 
 logger = logging.getLogger(__name__)
 
 AI_RATE_LIMIT_DELAY = float(os.getenv("AI_RATE_LIMIT_DELAY", "1"))
-PREVIEW_TTL_SECONDS = 1800  # 30 minutes
+PREVIEW_TTL_SECONDS = 1800
 MAX_IMPORT_FILE_SIZE = 16 * 1024 * 1024
+MAX_DELETE_RATIO = 0.5      # refuse delete_missing if it would delete more than this share
+JOB_CHUNK = 20              # كل كام تحليل نرفع vectors ونحدّث الشريط
 
-# ---------------------------------------------------------------------------
-# Column aliases (lower-stripped matching)
-# ---------------------------------------------------------------------------
 _NAME_ALIASES = {"test name", "اسم التحليل", "name", "الاسم"}
 _PRICE_ALIASES = {"price", "السعر", "سعر التحليل"}
 _DESC_ALIASES = {"test details", "تفاصيل التحليل", "description", "وصف", "الوصف"}
@@ -74,125 +43,48 @@ _DURATION_ALIASES = {"duration", "وقت الاستلام", "مدة التحلي
 _SAMPLE_ALIASES = {"sample type", "نوع العينة", "sample_type", "العينة"}
 
 
-def _col_match(header: str, aliases: set) -> bool:
-    return header.strip().lower() in {a.lower() for a in aliases}
-
-
-def _map_headers(headers: list[str]) -> dict:
-    mapping = {"name": None, "price": None, "description": None,
-               "duration": None, "sample_type": None}
-    for idx, h in enumerate(headers):
-        hl = (h or "").strip().lower()
-        if _col_match(hl, _NAME_ALIASES):
-            mapping["name"] = idx
-        elif _col_match(hl, _PRICE_ALIASES):
-            mapping["price"] = idx
-        elif _col_match(hl, _DESC_ALIASES):
-            mapping["description"] = idx
-        elif _col_match(hl, _DURATION_ALIASES):
-            mapping["duration"] = idx
-        elif _col_match(hl, _SAMPLE_ALIASES):
-            mapping["sample_type"] = idx
-    return mapping
-
-
 # ---------------------------------------------------------------------------
-# Parsing helpers
+# Small helpers
 # ---------------------------------------------------------------------------
-def _read_excel(file_obj: IO[bytes]) -> tuple[list[str], list[list]]:
-    import openpyxl
-    wb = openpyxl.load_workbook(file_obj, data_only=True)
-    ws = wb.active
-    rows = list(ws.iter_rows(values_only=True))
-    if not rows:
-        return [], []
-    return [str(c) if c is not None else "" for c in rows[0]], [list(r) for r in rows[1:]]
+def _s(v):
+    return v.decode("utf-8") if isinstance(v, bytes) else v
 
 
-def _read_xls(file_obj: IO[bytes]) -> tuple[list[str], list[list]]:
-    import xlrd
-    workbook = xlrd.open_workbook(file_contents=file_obj.read())
-    sheet = workbook.sheet_by_index(0)
-    if sheet.nrows == 0:
-        return [], []
-    return [str(value) if value is not None else "" for value in sheet.row_values(0)], [
-        sheet.row_values(index) for index in range(1, sheet.nrows)
-    ]
+def _norm_ws(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip())
 
 
-def _read_csv(file_obj: IO[bytes]) -> tuple[list[str], list[list]]:
-    import csv, io
-    content = file_obj.read()
-    for enc in ("utf-8-sig", "utf-8", "cp1256"):
-        try:
-            text = content.decode(enc); break
-        except UnicodeDecodeError:
-            text = None
-    if not text:
-        raise ValueError("تعذّر قراءة ملف CSV — تأكد من Encoding")
-    reader = csv.reader(io.StringIO(text))
-    rows = list(reader)
-    if not rows:
-        return [], []
-    return [c.strip() for c in rows[0]], [list(r) for r in rows[1:]]
+def _normalize_name(raw: str) -> str:
+    return _norm_ws(raw).lower()
 
 
 def _cell_str(val) -> str:
     return str(val).strip() if val is not None else ""
 
 
-def _normalize_name(raw: str) -> str:
-    """Lowercase + collapse internal whitespace for matching only."""
-    return re.sub(r"\s+", " ", raw.strip().lower())
+_ARABIC_INDIC = str.maketrans("٠١٢٣٤٥٦٧٨٩٫٬", "0123456789.,")
 
 
-def _desc_changed(new_desc: str | None, db_desc: str | None) -> bool:
-    """
-    Fix 1: compare descriptions after normalising whitespace.
-    Returns True only when the content is meaningfully different.
-    A None/empty new description never counts as a change.
-    """
-    if not new_desc:          # nothing in the file → no change
-        return False
-    norm_new = re.sub(r"\s+", " ", new_desc.strip())
-    norm_db  = re.sub(r"\s+", " ", (db_desc or "").strip())
-    return norm_new != norm_db
-
-
-def _name_changed(new_name: str, db_name: str) -> bool:
-    """Name comparison after whitespace normalisation."""
-    return re.sub(r"\s+", " ", new_name.strip()) != re.sub(r"\s+", " ", (db_name or "").strip())
-
-
-# Arabic-Indic to ASCII digit map
-_ARABIC_INDIC = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
-
-
-def _cell_float(val) -> float | None:
-    """
-    Robust price parser:
-    - Accepts 1,105.00  /  1105.00  /  1 105  (spaces)  /  Arabic-Indic digits
-    - Returns None for empty / non-numeric / negative / zero values
-    """
+def _cell_float(val, allow_zero: bool = False) -> float | None:
+    """Parse a price. Returns None if invalid (negative, empty, text)."""
     if val is None:
         return None
     s = str(val).strip().translate(_ARABIC_INDIC)
-    # Remove thousand-separator commas and spaces between digits
-    s = re.sub(r"(?<=\d)[,\s](?=\d)", "", s)
-    s = s.replace(",", "")  # any remaining commas
-    s = s.strip()
+    if not s or s.startswith("-"):
+        return None
+    s = re.sub(r"[^\d.]", "", s)   # drops commas, spaces, currency text
     if not s:
         return None
     try:
         result = float(s)
-        return result if result > 0 else None
-    except (ValueError, TypeError):
+    except ValueError:
         return None
+    return result if (result > 0 or allow_zero) else None
 
 
 def _cell_int(val) -> int | None:
     f = _cell_float(val)
-    return int(f) if f is not None else None
+    return int(f) if f else None
 
 
 def _get_cell(row, col_map, field):
@@ -202,30 +94,92 @@ def _get_cell(row, col_map, field):
     return row[idx]
 
 
+def _map_headers(headers: list[str]) -> dict:
+    groups = {
+        "name": _NAME_ALIASES, "price": _PRICE_ALIASES, "description": _DESC_ALIASES,
+        "duration": _DURATION_ALIASES, "sample_type": _SAMPLE_ALIASES,
+    }
+    mapping = {k: None for k in groups}
+    for idx, h in enumerate(headers):
+        hl = _norm_ws(h).lower()
+        for field, aliases in groups.items():
+            if mapping[field] is None and hl in {a.lower() for a in aliases}:
+                mapping[field] = idx
+                break
+    return mapping
+
+
+def _desc_changed(new_desc, db_desc) -> bool:
+    if not new_desc:
+        return False
+    return _norm_ws(new_desc) != _norm_ws(db_desc or "")
+
+
+def _compute_changes(r: dict, cur_price, cur_desc, cur_duration, cur_sample) -> dict:
+    return {
+        "price": abs(float(cur_price or 0) - r["price"]) >= 0.001,
+        "desc": _desc_changed(r.get("description"), cur_desc),
+        "duration": r.get("duration") is not None and r["duration"] != cur_duration,
+        "sample": bool(r.get("sample_type")) and _norm_ws(r["sample_type"]) != _norm_ws(cur_sample or ""),
+    }
+
+
 # ---------------------------------------------------------------------------
-# Redis helpers for preview token and progress
+# File readers
 # ---------------------------------------------------------------------------
-def _preview_key(token: str) -> str:
-    return f"import:preview:{token}"
+def _read_excel(file_obj: IO[bytes]):
+    import openpyxl
+    wb = openpyxl.load_workbook(BytesIO(file_obj.read()), data_only=True, read_only=True)
+    try:
+        rows = [list(r) for r in wb.active.iter_rows(values_only=True)]
+    finally:
+        wb.close()
+    if not rows:
+        return [], []
+    return [_cell_str(c) for c in rows[0]], rows[1:]
 
 
-def _progress_key(token: str) -> str:
-    return f"import:progress:{token}"
+def _read_xls(file_obj: IO[bytes]):
+    import xlrd
+    sheet = xlrd.open_workbook(file_contents=file_obj.read()).sheet_by_index(0)
+    if sheet.nrows == 0:
+        return [], []
+    return [_cell_str(v) for v in sheet.row_values(0)], [sheet.row_values(i) for i in range(1, sheet.nrows)]
 
 
-def _city_progress_key(city_id: int) -> str:
-    return f"import:city:{city_id}:latest"
+def _read_csv(file_obj: IO[bytes]):
+    content = file_obj.read()
+    text = None
+    for enc in ("utf-8-sig", "utf-8", "cp1256"):
+        try:
+            text = content.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if text is None:
+        raise ValueError("تعذّر قراءة ملف CSV — تأكد من Encoding")
+    rows = list(csv.reader(io.StringIO(text)))
+    if not rows:
+        return [], []
+    return [c.strip() for c in rows[0]], rows[1:]
+
+
+# ---------------------------------------------------------------------------
+# Redis helpers
+# ---------------------------------------------------------------------------
+def _preview_key(token): return f"import:preview:{token}"
+def _progress_key(token): return f"import:progress:{token}"
+def _city_progress_key(city_id): return f"import:city:{city_id}:latest"
+def _lock_key(token): return f"import:lock:{token}"
 
 
 def _save_preview(token: str, data: dict) -> None:
-    r = get_redis_client()
-    r.set(_preview_key(token), json.dumps(data, ensure_ascii=False), ex=PREVIEW_TTL_SECONDS)
+    get_redis_client().set(_preview_key(token), json.dumps(data, ensure_ascii=False), ex=PREVIEW_TTL_SECONDS)
 
 
 def _load_preview(token: str) -> dict | None:
-    r = get_redis_client()
-    raw = r.get(_preview_key(token))
-    return json.loads(raw) if raw else None
+    raw = get_redis_client().get(_preview_key(token))
+    return json.loads(_s(raw)) if raw else None
 
 
 def _init_progress(token: str, total: int) -> None:
@@ -249,79 +203,50 @@ def _update_progress(token: str, done: int = 0, failed: int = 0) -> None:
 def _finish_progress(token: str) -> None:
     r = get_redis_client()
     r.hset(_progress_key(token), "status", "done")
+    r.hset(_progress_key(token), "pending", 0)
 
 
-# ---------------------------------------------------------------------------
-# Public: get_import_progress
-# ---------------------------------------------------------------------------
 def get_import_progress(token: str) -> dict:
-    """
-    Return the background AI/embedding job progress for a commit token.
-    Keys: total, done, failed, pending, status ('running' | 'done').
-    Returns {} if the token has expired or never existed.
-    """
-    r = get_redis_client()
-    data = r.hgetall(_progress_key(token))
+    data = get_redis_client().hgetall(_progress_key(token))
     if not data:
         return {}
-    return {k: int(v) if v.isdigit() else v for k, v in data.items()}
+    out = {}
+    for k, v in data.items():
+        k, v = _s(k), _s(v)
+        out[k] = int(v) if v.lstrip("-").isdigit() else v
+    return out
 
 
 def get_city_import_progress(city_id: int) -> dict:
-    """Return progress for the most recently committed import in a city."""
-    r = get_redis_client()
-    token = r.get(_city_progress_key(city_id))
-    if isinstance(token, bytes):
-        token = token.decode("utf-8")
+    token = _s(get_redis_client().get(_city_progress_key(city_id)))
     return get_import_progress(token) if token else {}
 
 
 # ---------------------------------------------------------------------------
-# Public: preview
+# Preview
 # ---------------------------------------------------------------------------
-def preview_import(
-    file_obj: IO[bytes],
-    filename: str,
-    laboratory_id: int,
-    city_id: int,
-    delete_missing: bool = False,
-) -> dict:
-    """
-    Parse the file, classify every row, save to Redis, return a token.
-
-    Returns:
-        {
-            "token":           str,
-            "new":             int,
-            "price_changed":   int,
-            "desc_changed":    int,
-            "unchanged":       int,
-            "needs_review":    list[{"row": int, "name": str, "reason": str}],
-            "warnings":        list[str],
-            "would_delete":    {"count": int, "names": list[str]},  # only when delete_missing=True
-            "error":           str | None,
-        }
-    """
-    result = {"token": None, "new": 0, "price_changed": 0, "desc_changed": 0,
+def preview_import(file_obj, filename, laboratory_id, city_id, delete_missing=False) -> dict:
+    result = {"token": None, "new": 0, "updated": 0, "price_changed": 0, "desc_changed": 0,
               "unchanged": 0, "needs_review": [], "warnings": [],
               "would_delete": {"count": 0, "names": []}, "error": None}
 
-    # Validate city ownership
     city = db.session.get(City, city_id)
     if not city:
-        result["error"] = "المدينة غير موجودة"; return result
+        result["error"] = "المدينة غير موجودة"
+        return result
     if city.laboratory_id != laboratory_id:
-        result["error"] = "المدينة لا تنتمي إلى هذا المعمل"; return result
+        result["error"] = "المدينة لا تنتمي إلى هذا المعمل"
+        return result
 
     ext = (filename or "").rsplit(".", 1)[-1].lower()
     try:
-        position = file_obj.tell()
+        pos = file_obj.tell()
         file_obj.seek(0, 2)
-        file_size = file_obj.tell()
-        file_obj.seek(position)
+        size = file_obj.tell()
+        file_obj.seek(pos)
     except (AttributeError, OSError):
-        file_size = 0
-    if file_size > MAX_IMPORT_FILE_SIZE:
+        size = 0
+    if size > MAX_IMPORT_FILE_SIZE:
         result["error"] = "حجم الملف أكبر من الحد المسموح (16 ميجابايت)"
         return result
 
@@ -333,433 +258,352 @@ def preview_import(
         elif ext == "csv":
             headers, rows = _read_csv(file_obj)
         else:
-            result["error"] = f"نوع الملف '{ext}' غير مدعوم. استخدم xlsx أو csv."
+            result["error"] = f"نوع الملف '{ext}' غير مدعوم. استخدم xlsx أو xls أو csv."
             return result
     except Exception as e:
-        result["error"] = f"خطأ في قراءة الملف: {e}"; return result
+        result["error"] = f"خطأ في قراءة الملف: {e}"
+        return result
 
     if not headers or not rows:
-        result["error"] = "الملف فارغ"; return result
+        result["error"] = "الملف فارغ"
+        return result
 
     col_map = _map_headers(headers)
     if col_map["name"] is None:
-        result["error"] = "لم يتم العثور على عمود 'Test Name'. تأكد من عنوان العمود."
+        result["error"] = "لم يتم العثور على عمود 'Test Name' (أو 'اسم التحليل'). تأكد من عنوان العمود."
         return result
     if col_map["price"] is None:
-        result["error"] = "لم يتم العثور على عمود 'Price'. تأكد من عنوان العمود."
+        result["error"] = "لم يتم العثور على عمود 'Price' (أو 'السعر'). تأكد من عنوان العمود."
         return result
 
-    # Build a lookup of existing tests in this city (normalised name → {id, price, description})
+    all_tests = LabService.query.filter_by(laboratory_id=laboratory_id, city_id=city_id).all()
     existing = {
         _normalize_name(s.name): {
-            "id": s.id,
-            "price": float(s.price or 0),
-            "name": s.name,
-            "description": s.description,
-        }
-        for s in LabService.query.filter_by(
-            laboratory_id=laboratory_id, city_id=city_id
-        ).all()
+            "price": s.price, "description": s.description,
+            "duration": s.duration, "sample_type": s.sample_type, "name": s.name,
+        } for s in all_tests
     }
 
-    # Deduplicate within file (last row wins)
-    seen_names: dict[str, int] = {}  # normalised_name → row_idx (1-based in file)
-    parsed_rows: list[dict] = []     # ordered list after dedup
+    parsed: dict[str, dict] = {}          # norm_name -> row (last wins)
+    skipped_norms: set[str] = set()       # rows rejected but whose test must NOT be deleted
 
     for row_idx, row in enumerate(rows, start=2):
         raw_name = _cell_str(_get_cell(row, col_map, "name"))
         if not raw_name:
-            if any(_cell_str(value) for value in row):
-                result["needs_review"].append({
-                    "row": row_idx, "name": "", "reason": "اسم التحليل فارغ"
-                })
+            if any(_cell_str(v) for v in row):
+                result["needs_review"].append({"row": row_idx, "name": "", "reason": "اسم التحليل فارغ"})
             continue
 
-        # Fix 4: name length guard
+        norm = _normalize_name(raw_name)
+
         if len(raw_name) > 255:
-            result["needs_review"].append({
-                "row": row_idx, "name": raw_name[:60] + "…",
-                "reason": "اسم التحليل أطول من 255 حرفاً"
-            })
+            skipped_norms.add(norm)
+            result["needs_review"].append({"row": row_idx, "name": raw_name[:60] + "…",
+                                           "reason": "اسم التحليل أطول من 255 حرفاً"})
             continue
 
-        # Fix 4: price must parse to a positive number; raw value shown on failure
-        raw_price_cell = _get_cell(row, col_map, "price")
-        raw_price = _cell_float(raw_price_cell)
-
-        norm_name = _normalize_name(raw_name)
-
-        if raw_price is None:
-            raw_val = _cell_str(raw_price_cell) if raw_price_cell is not None else "—"
-            result["needs_review"].append({
-                "row": row_idx, "name": raw_name,
-                "reason": f"سعر غير صالح: '{raw_val}'"
-            })
+        price_cell = _get_cell(row, col_map, "price")
+        price = _cell_float(price_cell, allow_zero=True)
+        if price is None:
+            skipped_norms.add(norm)
+            shown = _cell_str(price_cell) or "—"
+            result["needs_review"].append({"row": row_idx, "name": raw_name,
+                                           "reason": f"سعر غير صالح: '{shown}'"})
             continue
 
-        if norm_name in seen_names:
+        if norm in parsed:
             result["warnings"].append(
-                f"اسم مكرر في الملف: '{raw_name}' (صف {seen_names[norm_name]} و{row_idx}) — سيُستخدم آخر صف"
-            )
-            # Remove the previous entry from parsed_rows
-            parsed_rows = [r for r in parsed_rows if r["norm_name"] != norm_name]
+                f"اسم مكرر في الملف: '{raw_name}' (صف {parsed[norm]['row']} و{row_idx}) — سيُستخدم آخر صف")
 
-        seen_names[norm_name] = row_idx
-
-        description = _cell_str(_get_cell(row, col_map, "description")) or None
-        duration = _cell_int(_get_cell(row, col_map, "duration"))
-        sample_type = _cell_str(_get_cell(row, col_map, "sample_type")) or None
-
-        parsed_rows.append({
+        parsed[norm] = {
             "row": row_idx,
-            "name": raw_name,
-            "norm_name": norm_name,
-            "price": raw_price,
-            "description": description,
-            "duration": duration,
-            "sample_type": sample_type,
-        })
-
-    # Classify rows (Fix 1: compare desc after whitespace-normalisation)
-    token_rows = []
-    for r in parsed_rows:
-        norm = r["norm_name"]
-        if norm in existing:
-            ex = existing[norm]
-            price_same = abs(ex["price"] - r["price"]) < 0.001
-            desc_diff  = _desc_changed(r.get("description"), ex.get("description"))
-            if price_same and not desc_diff:
-                r["action"] = "unchanged"
-                result["unchanged"] += 1
-            else:
-                r["action"] = "update"
-                r["existing_id"] = ex["id"]
-                r["price_changed"] = not price_same
-                r["desc_changed"]  = desc_diff
-                if not price_same:
-                    result["price_changed"] += 1
-                if desc_diff:
-                    result["desc_changed"] += 1
-        else:
-            r["action"] = "create"
-            result["new"] += 1
-        token_rows.append(r)
-
-    # Fix 3: would_delete preview
-    if delete_missing:
-        all_file_norms = {r["norm_name"] for r in token_rows}
-        would_del_names = [
-            s_name for s_norm, s_name in (
-                (_normalize_name(s.name), s.name)
-                for s in LabService.query.filter_by(
-                    laboratory_id=laboratory_id, city_id=city_id
-                ).all()
-            ) if s_norm not in all_file_norms
-        ]
-        result["would_delete"] = {
-            "count": len(would_del_names),
-            "names": would_del_names[:10],
+            "name": _norm_ws(raw_name),
+            "norm_name": norm,
+            "price": price,
+            "description": _cell_str(_get_cell(row, col_map, "description")) or None,
+            "duration": _cell_int(_get_cell(row, col_map, "duration")),
+            "sample_type": _cell_str(_get_cell(row, col_map, "sample_type")) or None,
         }
+
+    for norm, r in parsed.items():
+        ex = existing.get(norm)
+        if ex is None:
+            result["new"] += 1
+            continue
+        ch = _compute_changes(r, ex["price"], ex["description"], ex["duration"], ex["sample_type"])
+        if not any(ch.values()):
+            result["unchanged"] += 1
+        else:
+            result["updated"] += 1
+            result["price_changed"] += ch["price"]
+            result["desc_changed"] += ch["desc"]
+
+    if delete_missing:
+        protected = set(parsed) | skipped_norms
+        names = [t.name for t in all_tests if _normalize_name(t.name) not in protected]
+        result["would_delete"] = {"count": len(names), "names": names[:10]}
+        if all_tests and len(all_tests) >= 10 and len(names) > MAX_DELETE_RATIO * len(all_tests):
+            result["warnings"].append(
+                f"الحذف هيمسح {len(names)} من {len(all_tests)} تحليل — العملية هتترفض عند التنفيذ. راجع الملف.")
 
     token = uuid.uuid4().hex
     _save_preview(token, {
         "laboratory_id": laboratory_id,
         "city_id": city_id,
-        "rows": token_rows,
-        "existing_norm_names": list(existing.keys()),
+        "rows": list(parsed.values()),
+        "skipped_norm_names": sorted(skipped_norms),
     })
     result["token"] = token
+    logger.info("Import preview: lab=%s city=%s file=%s new=%d updated=%d unchanged=%d review=%d token=%s",
+                laboratory_id, city_id, filename, result["new"], result["updated"],
+                result["unchanged"], len(result["needs_review"]), token)
     return result
 
 
 # ---------------------------------------------------------------------------
-# Public: commit
+# Commit
 # ---------------------------------------------------------------------------
-def commit_import(
-    token: str,
-    city_id: int,
-    delete_missing: bool = False,
-    generate_ai: bool = True,
-) -> dict:
-    """
-    Execute the DB changes for the previewed import, then kick off background AI.
-
-    Returns:
-        {
-            "created":       int,
-            "updated":       int,
-            "deleted":       int,
-            "total_for_ai":  int,
-            "token":         str,  # same token; use for progress polling
-            "error":         str | None,
-        }
-    """
-    result = {"created": 0, "updated": 0, "deleted": 0, "total_for_ai": 0,
-              "token": token, "error": None}
+def commit_import(token: str, city_id: int, delete_missing: bool = False, generate_ai: bool = True) -> dict:
+    result = {"created": 0, "updated": 0, "deleted": 0, "total_for_ai": 0, "token": token, "error": None}
 
     preview = _load_preview(token)
     if not preview:
-        result["error"] = "رمز المعاينة منتهي الصلاحية أو غير موجود"; return result
-
-    laboratory_id = preview["laboratory_id"]
+        result["error"] = "رمز المعاينة منتهي الصلاحية أو تم استخدامه بالفعل"
+        return result
     if preview["city_id"] != city_id:
-        result["error"] = "city_id لا يتطابق مع المعاينة المحفوظة"; return result
-
-    rows = preview["rows"]
-    existing_norm_names: set[str] = set(preview.get("existing_norm_names", []))
-    file_norm_names: set[str] = {r["norm_name"] for r in rows if r["action"] != "unchanged"}
-    # also add unchanged rows to file_norm_names so they're not deleted
-    all_file_norm_names: set[str] = {r["norm_name"] for r in rows}
-
-    created_ids: list[int] = []
-    updated_ids: list[int] = []
-
-    try:
-        for r in rows:
-            action = r["action"]
-            if action == "unchanged":
-                continue
-
-            if action == "create":
-                new_test = LabService(
-                    laboratory_id=laboratory_id,
-                    city_id=city_id,
-                    name=r["name"],
-                    price=r["price"],
-                    description=r.get("description"),
-                    duration=r.get("duration"),
-                    sample_type=r.get("sample_type"),
-                    sync_status="pending" if generate_ai else "ok",
-                )
-                db.session.add(new_test)
-                db.session.flush()
-                created_ids.append(new_test.id)
-                result["created"] += 1
-
-            elif action == "update":
-                existing_id = r.get("existing_id")
-                if not existing_id:
-                    continue
-                test = db.session.get(LabService, existing_id)
-                if not test:
-                    continue
-                test.price = r["price"]
-                # Fix 1: only update description when it actually differs (flag set in preview)
-                if r.get("desc_changed") and r.get("description"):
-                    test.description = r["description"]
-                    test.sync_status = "pending"   # description changed → re-embed
-                # duration / sample_type: update if provided (non-semantic, no re-embed needed)
-                if r.get("duration") is not None:
-                    test.duration = r["duration"]
-                if r.get("sample_type"):
-                    test.sample_type = r["sample_type"]
-                updated_ids.append(existing_id)
-                result["updated"] += 1
-
-        # delete_missing: remove city tests NOT in the file
-        deleted_pairs: list[tuple[int, int, int]] = []  # (test_id, lab_id, city_id)
-        if delete_missing:
-            all_tests = LabService.query.filter_by(
-                laboratory_id=laboratory_id, city_id=city_id
-            ).all()
-            for t in all_tests:
-                if _normalize_name(t.name) not in all_file_norm_names:
-                    deleted_pairs.append((t.id, t.laboratory_id, t.city_id))
-                    db.session.delete(t)
-                    result["deleted"] += 1
-
-        db.session.commit()
-
-    except Exception as e:
-        db.session.rollback()
-        logger.exception("Commit import failed: %s", e)
-        result["error"] = f"فشل في الحفظ: {e}"
+        result["error"] = "city_id لا يتطابق مع المعاينة المحفوظة"
         return result
 
-    # Delete Qdrant vectors for deleted tests (after commit, non-fatal)
+    laboratory_id = preview["laboratory_id"]
+    rows = preview["rows"]
+    protected = {r["norm_name"] for r in rows} | set(preview.get("skipped_norm_names", []))
+
+    redis = get_redis_client()
+    if not redis.set(_lock_key(token), 1, nx=True, ex=600):
+        result["error"] = "عملية الاستيراد قيد التنفيذ بالفعل"
+        return result
+
+    created_tests: list[LabService] = []
+    reembed_ids: list[int] = []
+    deleted_pairs: list[tuple[int, int, int]] = []
+
+    try:
+        all_tests = LabService.query.filter_by(laboratory_id=laboratory_id, city_id=city_id).all()
+        existing = {_normalize_name(t.name): t for t in all_tests}
+
+        to_delete = []
+        if delete_missing:
+            to_delete = [t for t in all_tests if _normalize_name(t.name) not in protected]
+            if len(all_tests) >= 10 and len(to_delete) > MAX_DELETE_RATIO * len(all_tests):
+                redis.delete(_lock_key(token))
+                result["error"] = (f"الحذف هيمسح {len(to_delete)} من {len(all_tests)} تحليل "
+                                   f"(أكتر من {int(MAX_DELETE_RATIO * 100)}%). راجع الملف.")
+                return result
+
+        for r in rows:
+            t = existing.get(r["norm_name"])
+            if t is None:
+                new_test = LabService(
+                    laboratory_id=laboratory_id, city_id=city_id,
+                    name=r["name"], price=r["price"], description=r.get("description"),
+                    duration=r.get("duration"), sample_type=r.get("sample_type"),
+                    sync_status="pending",
+                )
+                db.session.add(new_test)
+                created_tests.append(new_test)
+                continue
+
+            ch = _compute_changes(r, t.price, t.description, t.duration, t.sample_type)
+            if not any(ch.values()):
+                continue
+            if ch["price"]:
+                t.price = r["price"]
+            if ch["desc"]:
+                t.description = r["description"]
+                t.sync_status = "pending"
+                reembed_ids.append(t.id)
+            if ch["duration"]:
+                t.duration = r["duration"]
+            if ch["sample"]:
+                t.sample_type = r["sample_type"]
+            result["updated"] += 1
+
+        for t in to_delete:
+            deleted_pairs.append((t.id, t.laboratory_id, t.city_id))
+            db.session.delete(t)
+        result["deleted"] = len(to_delete)
+
+        db.session.flush()   # assigns ids to new rows
+        result["created"] = len(created_tests)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        redis.delete(_lock_key(token))
+        logger.exception("Commit import failed: %s", e)
+        result["error"] = f"فشل في الحفظ (لو فيه حجوزات أو باقات مربوطة بتحاليل محذوفة هيتمنع الحذف): {e}"
+        result["created"] = result["updated"] = result["deleted"] = 0
+        return result
+
+    redis.delete(_preview_key(token))   # token can't be committed twice
+    logger.info("Import commit: token=%s city=%s created=%d updated=%d deleted=%d for_ai=%d",
+                token, city_id, result["created"], result["updated"], result["deleted"],
+                len(created_tests) + len(reembed_ids))
+
     for test_id, lab_id, c_id in deleted_pairs:
         try:
             delete_test_vector(test_id, laboratory_id=lab_id, city_id=c_id)
         except Exception:
-            logger.exception("Failed to delete Qdrant point for deleted test %s", test_id)
+            logger.exception("Failed to delete Qdrant point for test %s", test_id)
 
-    # IDs that need AI or at least vector upsert:
-    # new tests always need AI + embedding;
-    # updated tests need re-embedding only if description changed (sync_status=pending)
-    needs_embedding_ids = created_ids[:]
-    for uid in updated_ids:
-        t = db.session.get(LabService, uid)
-        if t and t.sync_status == "pending":
-            needs_embedding_ids.append(uid)
-
+    needs_embedding_ids = [t.id for t in created_tests] + reembed_ids
     result["total_for_ai"] = len(needs_embedding_ids)
 
-    if generate_ai and needs_embedding_ids:
-        _init_progress(token, len(needs_embedding_ids))
-        r = get_redis_client()
-        r.set(_city_progress_key(city_id), token, ex=PREVIEW_TTL_SECONDS)
-        # Run in a background thread using the Flask app context
-        from app import create_app
-        app = create_app()
-        thread = threading.Thread(
-            target=_background_ai_job,
-            args=(app, token, laboratory_id, city_id, needs_embedding_ids),
+    _init_progress(token, len(needs_embedding_ids))
+    redis.set(_city_progress_key(city_id), token, ex=PREVIEW_TTL_SECONDS)
+
+    if needs_embedding_ids:
+        app = current_app._get_current_object()
+        threading.Thread(
+            target=_background_job,
+            args=(app, token, laboratory_id, city_id, needs_embedding_ids, generate_ai),
             daemon=True,
-        )
-        thread.start()
+        ).start()
     else:
-        _init_progress(token, 0)
         _finish_progress(token)
-        r = get_redis_client()
-        r.set(_city_progress_key(city_id), token, ex=PREVIEW_TTL_SECONDS)
 
     return result
 
 
 # ---------------------------------------------------------------------------
-# Background AI + embedding job
+# Background job: AI fill (optional) + vector upsert
 # ---------------------------------------------------------------------------
-def _background_ai_job(
-    app,
-    token: str,
-    laboratory_id: int,
-    city_id: int,
-    test_ids: list[int],
-) -> None:
-    """Runs in a daemon thread. Generates AI fields and upserts vectors."""
-    with app.app_context():
-        batch_items = []
-        failed_ids = []
-
-        for test_id in test_ids:
-            test = db.session.get(LabService, test_id)
-            if not test:
-                _update_progress(token, failed=1)
-                continue
-
-            ai_ok = True
-
-            # Generate ONLY missing fields.
-            # Fix 5: description from "Test Details" column is NEVER overwritten.
-            # Each `if not test.X` guard ensures we only fill empty fields.
-            needs_ai = not test.description or not test.sample_type or not test.duration
-            if needs_ai:
-                try:
-                    gen = generate_test(
-                        name=test.name,
-                        description=test.description,   # passed in so AI knows it exists
-                        instructions=test.patient_instructions,
-                    )
-                    if not test.description:            # Fix 5: ONLY fill if empty
-                        test.description = gen.description or None
-                    if not test.sample_type:
-                        test.sample_type = gen.sample_type or None
-                    if not test.duration:
-                        test.duration = gen.duration or None
-                    if not test.patient_instructions:
-                        test.patient_instructions = gen.patient_instructions or None
-                    if not test.keywords:
-                        test.keywords = gen.keywords or None
-                    if not test.alias_name:
-                        test.alias_name = gen.alias_name or None
-                    time.sleep(AI_RATE_LIMIT_DELAY)
-                except Exception as gen_err:
-                    logger.warning("AI generation failed for test %s: %s", test_id, gen_err)
-                    ai_ok = False
-
-            try:
-                db.session.commit()
-            except Exception as db_err:
-                db.session.rollback()
-                logger.exception("Failed to save AI fields for test %s: %s", test_id, db_err)
-                ai_ok = False
-
-            batch_items.append({
-                "test_id": test_id,
-                "test_name": test.name,
-                "description": test.description or "",
-                "keywords": test.keywords or [],
-                "_ai_ok": ai_ok,
-            })
-
-        # Batch upsert vectors in chunks of 100
-        CHUNK = 100
-        for i in range(0, len(batch_items), CHUNK):
-            chunk = batch_items[i:i + CHUNK]
-            upsert_input = [
-                {"test_id": item["test_id"], "test_name": item["test_name"],
-                 "description": item["description"], "keywords": item["keywords"]}
-                for item in chunk
-            ]
-            try:
-                vec_result = upsert_test_vectors_batch(laboratory_id, city_id, upsert_input)
-                succeeded_ids = set(vec_result.get("succeeded", []))
-                failed_vec = {f["test_id"] for f in vec_result.get("failed", [])}
-            except Exception as vec_err:
-                logger.exception("Batch vector upsert failed for chunk at %d: %s", i, vec_err)
-                succeeded_ids = set()
-                failed_vec = {item["test_id"] for item in chunk}
-
-            for item in chunk:
-                tid = item["test_id"]
-                t = db.session.get(LabService, tid)
-                if not t:
-                    continue
-                if tid in succeeded_ids:
-                    t.sync_status = "ok"
-                    _update_progress(token, done=1)
-                else:
-                    t.sync_status = "pending"
-                    failed_ids.append(tid)
-                    _update_progress(token, failed=1)
-
-            try:
-                db.session.commit()
-            except Exception:
-                db.session.rollback()
-
+def _background_job(app, token, laboratory_id, city_id, test_ids, generate_ai=True) -> None:
+    try:
+        with app.app_context():
+            _run_job(token, laboratory_id, city_id, test_ids, generate_ai)
+    except Exception:
+        logger.exception("Background import job crashed: token=%s", token)
+    finally:
         _finish_progress(token)
-        logger.info(
-            "Background AI job done: token=%s lab=%s city=%s succeeded=%d failed=%d",
-            token, laboratory_id, city_id,
-            len(test_ids) - len(failed_ids), len(failed_ids)
-        )
+
+
+def _flush_chunk(token, laboratory_id, city_id, chunk) -> int:
+    """يرفع vectors لدفعة، يحدّث sync_status والـ progress. يرجّع عدد الناجح."""
+    if not chunk:
+        return 0
+
+    payload = [{"test_id": it["test_id"], "test_name": it["test_name"],
+                "description": it["description"], "keywords": it["keywords"]} for it in chunk]
+    try:
+        vec = upsert_test_vectors_batch(laboratory_id, city_id, payload)
+        succeeded = set(vec.get("succeeded", []))
+    except Exception:
+        logger.exception("Batch vector upsert failed: token=%s", token)
+        succeeded = set()
+
+    ok = 0
+    for it in chunk:
+        t = db.session.get(LabService, it["test_id"])
+        if not t:
+            _update_progress(token, failed=1)
+            continue
+        if it["test_id"] in succeeded and it["ai_ok"]:
+            t.sync_status = "ok"
+            ok += 1
+            _update_progress(token, done=1)
+        else:
+            t.sync_status = "pending"
+            _update_progress(token, failed=1)
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        logger.exception("Failed to save sync_status: token=%s", token)
+    return ok
+
+
+def _run_job(token, laboratory_id, city_id, test_ids, generate_ai) -> None:
+    total = len(test_ids)
+    chunk = []
+    ok_count = 0
+    logger.info("Import job started: token=%s total=%d generate_ai=%s", token, total, generate_ai)
+
+    for n, test_id in enumerate(test_ids, start=1):
+        test = db.session.get(LabService, test_id)
+        if not test:
+            _update_progress(token, failed=1)
+            continue
+
+        ai_ok = True
+        if generate_ai and (not test.description or not test.sample_type or not test.duration):
+            try:
+                gen = generate_test(
+                    name=test.name,
+                    description=test.description,
+                    instructions=test.patient_instructions,
+                )
+                # only fill EMPTY fields — never overwrite what came from the file
+                if not test.description:
+                    test.description = gen.description or None
+                if not test.sample_type:
+                    test.sample_type = gen.sample_type or None
+                if not test.duration:
+                    test.duration = gen.duration or None
+                if not test.patient_instructions:
+                    test.patient_instructions = gen.patient_instructions or None
+                if not test.keywords:
+                    test.keywords = gen.keywords or None
+                if not test.alias_name:
+                    test.alias_name = gen.alias_name or None
+            except Exception as err:
+                logger.warning("AI generation failed for test %s: %s", test_id, err)
+                ai_ok = False
+            finally:
+                time.sleep(AI_RATE_LIMIT_DELAY)
+
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            logger.exception("Failed to save AI fields for test %s", test_id)
+            ai_ok = False
+
+        chunk.append({
+            "test_id": test_id,
+            "test_name": test.name,
+            "description": test.description or "",
+            "keywords": test.keywords or [],
+            "ai_ok": ai_ok,
+        })
+
+        if len(chunk) >= JOB_CHUNK or n == total:
+            ok_count += _flush_chunk(token, laboratory_id, city_id, chunk)
+            chunk = []
+            logger.info("Import progress: token=%s %d/%d processed (ok so far=%d)",
+                        token, n, total, ok_count)
+
+    ok_count += _flush_chunk(token, laboratory_id, city_id, chunk)   # أي باقي
+    logger.info("Import job done: token=%s lab=%s city=%s ok=%d failed=%d",
+                token, laboratory_id, city_id, ok_count, total - ok_count)
 
 
 # ---------------------------------------------------------------------------
-# Public: retry_pending
+# Retry pending
 # ---------------------------------------------------------------------------
 def retry_pending(laboratory_id: int, city_id: int) -> dict:
-    """
-    Re-run AI generation and vector upsert for all sync_status='pending'
-    tests in the given city.
-
-    Returns {"queued": int} — the number of tests submitted to background.
-    """
-    pending_tests = LabService.query.filter_by(
-        laboratory_id=laboratory_id,
-        city_id=city_id,
-        sync_status="pending",
-    ).all()
-
-    if not pending_tests:
+    ids = [t.id for t in LabService.query.filter_by(
+        laboratory_id=laboratory_id, city_id=city_id, sync_status="pending").all()]
+    if not ids:
         return {"queued": 0}
 
-    test_ids = [t.id for t in pending_tests]
     token = f"retry_{uuid.uuid4().hex}"
+    _init_progress(token, len(ids))
+    get_redis_client().set(_city_progress_key(city_id), token, ex=PREVIEW_TTL_SECONDS)
 
-    from app import create_app
-    app = create_app()
-    _init_progress(token, len(test_ids))
-
-    thread = threading.Thread(
-        target=_background_ai_job,
-        args=(app, token, laboratory_id, city_id, test_ids),
+    app = current_app._get_current_object()
+    threading.Thread(
+        target=_background_job,
+        args=(app, token, laboratory_id, city_id, ids, True),
         daemon=True,
-    )
-    thread.start()
-
-    logger.info("retry_pending started: lab=%s city=%s count=%d token=%s",
-                laboratory_id, city_id, len(test_ids), token)
-
-    return {"queued": len(test_ids), "token": token}
+    ).start()
+    return {"queued": len(ids), "token": token}

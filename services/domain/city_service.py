@@ -1,7 +1,7 @@
 import logging
 from sqlalchemy.exc import IntegrityError
 
-from models.models import db, City, Branch, LabService, Client
+from models.models import db, City, Branch, LabServiceCityPrice, Client
 
 logger = logging.getLogger(__name__)
 
@@ -44,20 +44,6 @@ class CityService:
                 aliases=self._normalize_aliases(aliases),
             )
             db.session.add(new_city)
-            # flush to get the auto-generated city id WITHOUT committing yet
-            db.session.flush()
-
-            # Ensure Qdrant collection BEFORE committing the city row.
-            # If this fails the city is rolled back and never persists.
-            try:
-                from services.shared.vector_service import ensure_collection
-                ensure_collection(laboratory_id=lab_id, city_id=new_city.id)
-            except Exception:
-                db.session.rollback()
-                logger.exception("Failed to create vector collection for city (lab=%s)", lab_id)
-                return None, "حدث خطأ أثناء إنشاء مجموعة البحث الجغرافي للمدينة"
-
-            # Only commit after Qdrant collection is confirmed
             db.session.commit()
             self._city = new_city
             self.city_id = new_city.id
@@ -203,31 +189,16 @@ class CityService:
             if not city:
                 return False, msg
 
-            has_tests = LabService.query.filter_by(city_id=city.id).first() is not None
+            has_tests = LabServiceCityPrice.query.filter_by(city_id=city.id).first() is not None
             has_branches = Branch.query.filter_by(city_id=city.id).first() is not None
             has_clients = Client.query.filter_by(city_id=city.id).first() is not None
 
             if has_tests or has_branches or has_clients:
                 return False, "لا يمكن حذف المنطقة لأنها تحتوي على تحاليل أو فروع أو عملاء مرتبطة بها"
 
-            # Capture ids before deleting for Qdrant cleanup
-            lab_id_copy = city.laboratory_id
-            city_id_copy = city.id
-
-            # Delete the DB row and commit FIRST — city is gone regardless of Qdrant outcome
             db.session.delete(city)
             db.session.commit()
             self._city = None
-
-            # Drop the Qdrant collection AFTER commit; only log if it fails
-            try:
-                from services.shared.vector_service import drop_city_collection
-                drop_city_collection(laboratory_id=lab_id_copy, city_id=city_id_copy)
-            except Exception:
-                logger.exception(
-                    "Failed to drop Qdrant collection for deleted city (lab=%s city=%s) — DB row already removed",
-                    lab_id_copy, city_id_copy
-                )
 
             return True, "تم حذف المنطقة بنجاح"
         except Exception as e:

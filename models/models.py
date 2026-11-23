@@ -59,8 +59,9 @@ class City(db.Model):
     sort_order = db.Column(db.Integer, default=0, nullable=False)
     aliases = db.Column(db.JSON, nullable=True)
 
+    # Relationships
+    # NOTE: city.bundle_prices is added automatically by the backref in BundleCityPrice
     branches = db.relationship('Branch', backref='city', lazy=True, cascade="all, delete-orphan")
-    lab_services = db.relationship('LabService', backref='city', lazy=True)
 
 
 class Branch(db.Model):
@@ -73,17 +74,15 @@ class Branch(db.Model):
     working_hours = db.Column(db.Text(), nullable=True)
 
 
-
 class LabService(db.Model):
     __tablename__ = 'lab_services'
     __table_args__ = (
-        UniqueConstraint('city_id', 'name', name='uq_city_service_name'),
+        UniqueConstraint('laboratory_id', 'name', name='uq_laboratory_service_name'),
     )
     id = db.Column(db.Integer, primary_key=True) # Incremental ID
     laboratory_id = db.Column(db.Integer, db.ForeignKey('laboratories.id'), nullable=False) # Foreign Key linking to Laboratory
-    city_id = db.Column(db.Integer, db.ForeignKey('cities.id'), nullable=False, index=True) # Foreign Key linking to City
     name = db.Column(db.String(255), nullable=False) # Name of the service (used for agent prompt and search)
-    price = db.Column(db.Float, nullable=False) # Price of the test (used for agent prompt)
+    price = db.Column(db.Float, nullable=True) # Price of the test (used for agent prompt)
     duration = db.Column(db.Integer) # AI generation field for agent prompt
     patient_instructions = db.Column(db.TEXT, nullable=True) # Instructions for the patient regarding the test (used for agent prompt)
     description = db.Column(db.TEXT, nullable=True) # Description of the test (used for agent prompt and RAG search)
@@ -91,6 +90,30 @@ class LabService(db.Model):
     keywords = db.Column(db.JSON, nullable=True) # List of keywords for the test (used for agent and search)
     sample_type = db.Column(db.String(100)) # Sample type required for the test (used for agent prompt)
     sync_status = db.Column(db.String(10), nullable=False, default="ok") # Vector sync status: 'ok' or 'pending' (AI/embedding failed)
+    city_prices = db.relationship('LabServiceCityPrice', backref='lab_service',
+                                  lazy=True, cascade="all, delete-orphan")
+
+    def get_price_for_city(self, city_id):
+        """City price if it exists, otherwise the default price (may be None)."""
+        for cp in self.city_prices:
+            if cp.city_id == city_id:
+                return cp.price
+        return self.price
+
+class LabServiceCityPrice(db.Model):
+    __tablename__ = 'lab_service_city_prices'
+    __table_args__ = (
+        UniqueConstraint('lab_service_id', 'city_id', name='uq_lab_service_city'),
+    )
+    id = db.Column(db.Integer, primary_key=True)
+    lab_service_id = db.Column(db.Integer, db.ForeignKey('lab_services.id'), nullable=False, index=True)
+    city_id = db.Column(db.Integer, db.ForeignKey('cities.id'), nullable=False, index=True)
+    price = db.Column(db.Float, nullable=False)
+
+    city = db.relationship(
+        'City', backref=db.backref('lab_service_prices', lazy=True, cascade="all, delete-orphan")
+    )
+    
 
 
 class Platform(db.Model):
@@ -226,14 +249,42 @@ class TenantSettings(db.Model):
     # 2. Gmail token json
     gmail_token_json = db.Column(db.Text, nullable=True)   
 
-class Bundle(db.Model):
-    __tablename__ ="bundle"
 
-    id = db.Column(db.Integer, primary_key=True)  
+class Bundle(db.Model):
+    __tablename__ = "bundle"
+
+    id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(50), unique=True, nullable=True)
-    price = db.Column(db.Float, nullable=False)
-    description = db.Column(db.Text())  
+    price = db.Column(db.Float, nullable=True)  # Default price (optional) - used when a city has no specific price
+    description = db.Column(db.Text())
     instructions = db.Column(db.Text())
+
+    # Relationships
+    city_prices = db.relationship(
+        'BundleCityPrice', backref='bundle', lazy=True, cascade="all, delete-orphan"
+    )
+
+    def get_price_for_city(self, city_id):
+        """City price if it exists, otherwise the default price (may be None)."""
+        for cp in self.city_prices:
+            if cp.city_id == city_id:
+                return cp.price
+        return self.price
+
+
+class BundleCityPrice(db.Model):
+    __tablename__ = 'bundle_city_prices'
+    __table_args__ = (
+        UniqueConstraint('bundle_id', 'city_id', name='uq_bundle_city'),
+    )
+    id = db.Column(db.Integer, primary_key=True)
+    bundle_id = db.Column(db.Integer, db.ForeignKey('bundle.id'), nullable=False, index=True)
+    city_id = db.Column(db.Integer, db.ForeignKey('cities.id'), nullable=False, index=True)
+    price = db.Column(db.Float, nullable=False)
+
+    city = db.relationship(
+        'City', backref=db.backref('bundle_prices', lazy=True, cascade="all, delete-orphan")
+    )
 
 
 class ResultRequest(db.Model):
@@ -245,3 +296,65 @@ class ResultRequest(db.Model):
     city = db.relationship('City')
     status = db.Column(db.Enum(Status), default=Status.PENDING)  # PENDING / REVIEWED
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class DiscountCity(db.Model):
+    __tablename__ = 'discount_cities'
+    __table_args__ = (
+        UniqueConstraint('discount_id', 'city_id', name='uq_discount_city'),
+    )
+    id = db.Column(db.Integer, primary_key=True)
+    discount_id = db.Column(db.Integer, db.ForeignKey('discounts.id'), nullable=False, index=True)
+    city_id = db.Column(db.Integer, db.ForeignKey('cities.id'), nullable=False, index=True)
+    is_active = db.Column(db.Boolean, default=True, nullable=False)  # تفعيل الخصم في المدينة دي بس
+
+    city = db.relationship(
+        'City', backref=db.backref('discount_links', lazy=True, cascade="all, delete-orphan")
+    )
+
+
+class Discount(db.Model):
+    __tablename__ = 'discounts'
+    id = db.Column(db.Integer, primary_key=True)
+    laboratory_id = db.Column(db.Integer, db.ForeignKey('laboratories.id'), nullable=False, default=1)
+    laboratory = db.relationship('Laboratory', backref=db.backref('discounts', lazy=True))
+    name = db.Column(db.String(150), nullable=False)
+    discount_type = db.Column(db.String(20), default="percentage", nullable=False)
+    value = db.Column(db.Float, nullable=False, default=0.0)
+    aliases = db.Column(db.Text, nullable=True)
+    terms = db.Column(db.Text, nullable=True)
+    is_active = db.Column(db.Boolean, default=True, nullable=False)  # مفتاح عام لكل المدن
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    city_links = db.relationship(
+        'DiscountCity', backref='discount', lazy=True, cascade="all, delete-orphan"
+    )
+
+    def is_available_for_city(self, city_id):
+        """True لو الخصم شغال في المدينة دي."""
+        if not self.is_active:
+            return False
+        if not self.city_links:          # مفيش ربط = كل المدن
+            return True
+        for link in self.city_links:
+            if link.city_id == city_id:
+                return link.is_active
+        return False                     # مربوط بمدن تانية بس
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "laboratory_id": self.laboratory_id,
+            "name": self.name,
+            "discount_type": self.discount_type,
+            "value": self.value,
+            "aliases": self.aliases,
+            "terms": self.terms,
+            "is_active": self.is_active,
+            "all_cities": len(self.city_links) == 0,
+            "cities": [
+                {"city_id": l.city_id, "is_active": l.is_active}
+                for l in self.city_links
+            ],
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }

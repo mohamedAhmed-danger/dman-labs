@@ -4,20 +4,22 @@ from langchain_openai import ChatOpenAI
 
 
 def get_gemini():
-    api_key = Config.OPENROUTER_API_KEY
+    api_key = Config.OPENAI_API_KEY
 
     if not api_key:
         raise ValueError(
-            "OPENROUTER_API_KEY must be set."
+            "OPENAI_API_KEY must be set."
         )
 
     return ChatOpenAI(
-        model=Config.OPENAI_MODEL,  # لازم تبقى "openai/gpt-5.6-luna"
+        model=Config.OPENAI_MODEL,
         api_key=api_key,
-        base_url="https://openrouter.ai/api/v1",
-        extra_body={"reasoning": {"effort": "medium"}},
+        base_url="https://api.openai.com/v1",
+        use_responses_api=True,
+        reasoning={"effort":  "medium"},
         temperature=0.0,
     )
+
 
 
 def get_gemini_embeddings():

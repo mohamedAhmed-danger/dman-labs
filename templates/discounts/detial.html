@@ -1,0 +1,36 @@
+{% extends 'base.html' %}
+
+{% block title %}تعديل خصم — معمل رعاية{% endblock %}
+{% block topbar_title %}تعديل الخصم{% endblock %}
+{% block topbar_sub %}{{ discount.name }}{% endblock %}
+
+{% block content %}
+<div class="card" style="max-width: 800px; margin: 0 auto; padding: 2rem;">
+
+  <div style="display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.5rem; flex-wrap: wrap;">
+    <div style="display: flex; align-items: center; gap: 1rem;">
+      <div style="background: var(--primary-light); color: var(--primary); padding: 0.85rem; border-radius: 12px; display: flex; align-items: center; justify-content: center;">
+        <i data-lucide="badge-percent" style="width: 28px; height: 28px;"></i>
+      </div>
+      <div>
+        <h3 style="margin: 0; font-size: 1.25rem; font-weight: 700;">تعديل بيانات الخصم</h3>
+        <p style="margin: 0.25rem 0 0 0; color: #64748b; font-size: 0.875rem;">غيّر القيمة أو المدن أو حالة التفعيل</p>
+      </div>
+    </div>
+
+    <form method="POST" action="{{ url_for('discount.delete_discount', discount_id=discount.id) }}"
+          onsubmit="return confirm('متأكد إنك عايز تحذف الخصم ده؟ مش هتقدر ترجعه تاني.');">
+      <button type="submit" class="btn btn-ghost" style="color: #dc2626; display: flex; align-items: center; gap: 0.4rem;">
+        <i data-lucide="trash-2"></i>
+        <span>حذف الخصم</span>
+      </button>
+    </form>
+  </div>
+
+  <hr style="border: 0; border-top: 1px solid #e2e8f0; margin-bottom: 1.5rem;">
+
+  {% set form_action = url_for('discount.discount_detail', discount_id=discount.id) %}
+  {% set submit_label = 'حفظ التعديلات' %}
+  {% include 'discounts/_form.html' %}
+</div>
+{% endblock %}

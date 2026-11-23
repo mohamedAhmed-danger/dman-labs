@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 
 {% block title %}
-{% if is_edit and service %}تعديل التحليل الطبي — {{ service.name }}{% else %}إضافة تحليل طبي جديد{% endif %} — معامل ضمان
+{% if is_edit and service %}تعديل التحليل الطبي — {{ service.name }}{% else %}إضافة تحليل طبي جديد{% endif %} — معمل رعاية
 {% endblock %}
 
 {% block topbar_title %}
@@ -24,7 +24,7 @@
 {% endblock %}
 
 {% block topbar_actions %}
-<a href="{{ url_for('test.test_service') }}" class="btn btn-outline btn-sm" style="height: 38px; padding: 0 14px; font-weight: 600;">
+<a href="{{ url_for('test.test_service', laboratory_id=service.laboratory_id if service else None, city_id=selected_city_id or 'all') }}" class="btn btn-outline btn-sm" style="height: 38px; padding: 0 14px; font-weight: 600;">
   <i data-lucide="arrow-right"></i>
   العودة لدليل التحاليل
 </a>
@@ -98,35 +98,17 @@
       <!-- 4-Column Balanced Grid (Desktop) -->
       <div class="basic-info-grid">
 
-        <!-- 0. City / Region Selection -->
-        <div>
-          <label for="citySelect" class="field-label">
-            <i data-lucide="map-pin" class="tf-field-label-icon"></i>
-            المنطقة الجغرافية <span class="required-star">*</span>
-          </label>
-          {% if is_edit and service %}
-          <input type="text" class="form-control" value="{{ service.city.name if service.city else '' }}" readonly style="background-color: var(--border-soft); cursor: not-allowed;">
-          <input type="hidden" name="city_id" value="{{ service.city_id }}">
-          {% else %}
-          <select id="citySelect" name="city_id" class="form-control" required>
-            <option value="">اختر المنطقة...</option>
-            {% for city in cities %}
-            <option value="{{ city.id }}"
-              {% if selected_city_id == city.id or (form_data and form_data.city_id|int == city.id) %}selected{% endif %}>
-              {{ city.name }}
-            </option>
-            {% endfor %}
-          </select>
-          {% endif %}
-        </div>
-
         <!-- 1. Laboratory Selection -->
         <div>
           <label for="labSelect" class="field-label">
             <i data-lucide="building-2" class="tf-field-label-icon"></i>
             المعمل التابع له <span class="required-star">*</span>
           </label>
-          <select id="labSelect" name="laboratory_id" class="form-control" required>
+          {% if is_edit and service %}
+          <input type="hidden" name="laboratory_id" value="{{ service.laboratory_id }}">
+          {% endif %}
+          <select id="labSelect" {% if not (is_edit and service) %}name="laboratory_id"{% endif %} class="form-control" required
+                  {% if is_edit and service %}disabled style="background-color: var(--border-soft); cursor: not-allowed;"{% endif %}>
             {% for lab in laboratories %}
             <option value="{{ lab.id }}"
               {% if (service and service.laboratory_id == lab.id) or (form_data and form_data.laboratory_id|int == lab.id) or (not service and loop.first) %}selected{% endif %}>
@@ -140,7 +122,7 @@
         <div>
           <label for="testPriceInput" class="field-label">
             <i data-lucide="banknote" class="tf-field-label-icon"></i>
-            السعر (ج.م) <span class="required-star">*</span>
+            السعر الافتراضي (ج.م)
           </label>
           <div class="tf-input-icon-wrap">
             <span class="tf-input-suffix">ج.م</span>
@@ -152,9 +134,9 @@
               name="price"
               value="{{ service.price if service else (form_data.price if form_data else '') }}"
               class="form-control tf-input-with-suffix"
-              placeholder="0.00"
-              required>
+              placeholder="اختياري">
           </div>
+          <div class="field-hint"><span>يُستخدم للمناطق التي ليس لها سعر خاص.</span></div>
         </div>
 
         <!-- 3. Duration -->
@@ -191,6 +173,34 @@
             placeholder="مثال: دم، سيرم، بول...">
         </div>
 
+      </div>
+
+      <!-- City prices -->
+      <div style="margin-top: 22px;">
+        <label class="field-label">
+          <i data-lucide="map-pin" class="tf-field-label-icon"></i>
+          الأسعار حسب المنطقة (ج.م)
+        </label>
+        <div class="basic-info-grid">
+          {% for city in cities %}
+          <div>
+            <label for="cityPrice{{ city.id }}" class="field-label" style="font-weight: 600;">{{ city.name }}</label>
+            <div class="tf-input-icon-wrap">
+              <span class="tf-input-suffix">ج.م</span>
+              <input
+                type="number" step="0.01" min="0"
+                id="cityPrice{{ city.id }}"
+                name="city_price_{{ city.id }}"
+                value="{{ city_prices.get(city.id, '') if city_prices else (form_data.get('city_price_' ~ city.id, '') if form_data else '') }}"
+                class="form-control tf-input-with-suffix"
+                placeholder="غير متاح">
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+        <div class="field-hint">
+          <span>اترك الخانة فارغة لو التحليل غير متاح في هذه المنطقة (ولا يوجد سعر افتراضي). يجب إدخال سعر افتراضي أو سعر منطقة واحدة على الأقل.</span>
+        </div>
       </div>
     </div>
 

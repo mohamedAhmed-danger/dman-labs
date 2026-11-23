@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}خدمات التحاليل الطبية — معامل ضمان{% endblock %}
+{% block title %}خدمات التحاليل الطبية — معمل رعاية{% endblock %}
 
 {% block topbar_title %}خدمات التحاليل الطبية{% endblock %}
 {% block topbar_sub %}إدارة وتحديث فحوصات التحاليل الطبية والأسعار لكل منطقة{% endblock %}
@@ -12,37 +12,23 @@
     <i data-lucide="download"></i>
     تصدير أسعار المنطقة
   </button>
+   
   <button type="button" class="btn btn-primary" id="openImportModalBtn">
     <i data-lucide="upload"></i>
     استيراد أسعار
   </button>
   #}
-  <a href="{{ url_for('test.create_test', city_id=selected_city_id) }}" class="btn btn-primary">
+  <a href="{{ url_for('test.create_test', laboratory_id=laboratory_id) }}" class="btn btn-primary">
     <i data-lucide="plus-circle"></i>
-    + إضافة تحليل جديد
+    إضافة تحليل جديد
   </a>
 </div>
 {% endblock %}
 
 {% block content %}
 
-<!-- ── Region Pills (City Filter Tabs) ─────────────────────── -->
+<!-- ── Retry bar (city filter removed: the catalog is uniform across regions) ── -->
 <div class="ts-region-pills-bar">
-  <div class="ts-region-pills">
-    <a href="{{ url_for('test.test_service', city_id='all', search=search, per_page=per_page) }}"
-       class="ts-pill {% if not selected_city_id %}active{% endif %}">
-      <i data-lucide="layers"></i>
-      الكل
-    </a>
-    {% for city in cities %}
-    <a href="{{ url_for('test.test_service', city_id=city.id, search=search, per_page=per_page) }}"
-       class="ts-pill {% if selected_city_id == city.id %}active{% endif %}">
-      <i data-lucide="map-pin"></i>
-      {{ city.name }}
-    </a>
-    {% endfor %}
-  </div>
-
   {# Hidden for now (development only): indexing retry button
   {% if pending_count and pending_count > 0 %}
   <button type="button" class="btn btn-warning btn-sm ts-pending-retry-btn" id="retryPendingBtn">
@@ -56,24 +42,10 @@
 <!-- ── Quick Stats Strip ───────────────────────────────────── -->
 <div class="ts-stats-strip">
   <div class="ts-stat-pill">
-    <div class="ts-stat-pill-icon si-purple"><i data-lucide="flask-conical"></i></div>
+    <div class="ts-stat-pill-icon si-blue"><i data-lucide="flask-conical"></i></div>
     <div>
       <div class="ts-stat-pill-value">{{ pagination.total if pagination else (services|length) }}</div>
       <div class="ts-stat-pill-label">إجمالي التحاليل</div>
-    </div>
-  </div>
-
-  <div class="ts-stat-pill">
-    <div class="ts-stat-pill-icon si-blue"><i data-lucide="map-pin"></i></div>
-    <div>
-      <div class="ts-stat-pill-value">
-        {% if selected_city_id %}
-          {% for c in cities %}{% if c.id == selected_city_id %}{{ c.name }}{% endif %}{% endfor %}
-        {% else %}
-          جميع المناطق
-        {% endif %}
-      </div>
-      <div class="ts-stat-pill-label">المنطقة المحددة</div>
     </div>
   </div>
 
@@ -93,11 +65,7 @@
 <!-- ── Search & Filter Bar ─────────────────────────────────── -->
 <div class="card ts-filter-card">
   <form method="GET" action="{{ url_for('test.test_service') }}" class="ts-filter-form">
-    {% if selected_city_id %}
-    <input type="hidden" name="city_id" value="{{ selected_city_id }}">
-    {% else %}
-    <input type="hidden" name="city_id" value="all">
-    {% endif %}
+    <input type="hidden" name="laboratory_id" value="{{ laboratory_id }}">
 
     <div class="ts-filter-field ts-filter-search">
       <label class="ts-filter-label">بحث عن تحليل</label>
@@ -138,7 +106,7 @@
         تصفية
       </button>
       {% if search or sync_status %}
-      <a href="{{ url_for('test.test_service', city_id=selected_city_id or 'all') }}" class="btn btn-ghost ts-filter-btn ts-filter-reset" title="إعادة تعيين البحث">
+      <a href="{{ url_for('test.test_service', laboratory_id=laboratory_id) }}" class="btn btn-ghost ts-filter-btn ts-filter-reset" title="إعادة تعيين البحث">
         <i data-lucide="rotate-ccw"></i>
       </a>
       {% endif %}
@@ -153,10 +121,7 @@
       <tr>
         <th style="width: 60px;">#</th>
         <th>اسم التحليل</th>
-        {% if not selected_city_id %}
-        <th>المنطقة</th>
-        {% endif %}
-        <th>السعر</th>
+        <th>الأسعار حسب المنطقة</th>
         <th>نوع العينة</th>
         <th>المدة المتوقعة</th>
         <th style="width: 170px; text-align: center;">الإجراءات</th>
@@ -181,18 +146,20 @@
             </div>
           </div>
         </td>
-        {% if not selected_city_id %}
         <td>
-          <span class="ts-lab-tag">
-            <i data-lucide="map-pin"></i>
-            {{ service.city.name if service.city else '—' }}
-          </span>
-        </td>
-        {% endif %}
-        <td>
-          <span class="ts-price-badge">
-            {{ '%.2f'|format(service.price) if service.price else '0.00' }} <span class="ts-price-currency">ج.م</span>
-          </span>
+            <div style="display: flex; flex-direction: column; gap: 4px;">
+              {% for city in cities %}
+              {% set p = service.get_price_for_city(city.id) %}
+              <div style="display: flex; justify-content: space-between; gap: 12px; font-size: 0.82rem;">
+                <span>{{ city.name }}</span>
+                {% if p is not none %}
+                <strong>{{ '%.2f'|format(p) }} ج.م</strong>
+                {% else %}
+                <span class="ts-muted-dash">غير متاح</span>
+                {% endif %}
+              </div>
+              {% endfor %}
+            </div>
         </td>
         <td>
           {% if service.sample_type %}
@@ -224,6 +191,7 @@
             </a>
 
             <form action="{{ url_for('test.delete_test', test_id=service.id) }}" method="POST" style="display: inline; margin: 0;">
+              <input type="hidden" name="laboratory_id" value="{{ laboratory_id }}">
               <button type="button" class="btn btn-outline btn-sm ts-action-btn ts-action-danger" onclick="confirmDelete(this.form)" title="حذف التحليل">
                 <i data-lucide="trash-2"></i>
                 حذف
@@ -234,22 +202,22 @@
       </tr>
       {% else %}
       <tr>
-        <td colspan="7" style="text-align: center; padding: 56px 20px;">
+        <td colspan="6" style="text-align: center; padding: 56px 20px;">
           <div class="ts-empty-icon"><i data-lucide="flask-conical"></i></div>
-          <h4 style="font-size: 1.05rem; margin-bottom: 6px;">لا توجد تحاليل طبية مسجلة لهذه المنطقة</h4>
+          <h4 style="font-size: 1.05rem; margin-bottom: 6px;">لا توجد تحاليل طبية متاحة هنا</h4>
           <p style="color: var(--ink-500); font-size: 0.85rem; margin-bottom: 18px;">
             {% if search %}
             لم يتم العثور على أي نتائج تطابق البحث "{{ search }}".
             {% else %}
-            ابدأ بإضافة تحاليل جديدة أو استيراد قائمة الأسعار لهذه المنطقة.
+            ابدأ بإضافة تحاليل جديدة أو استيراد قائمة الأسعار.
             {% endif %}
           </p>
           {% if search %}
-          <a href="{{ url_for('test.test_service', city_id=selected_city_id or 'all') }}" class="btn btn-outline">إلغاء التصفية</a>
+          <a href="{{ url_for('test.test_service', laboratory_id=laboratory_id) }}" class="btn btn-outline">إلغاء التصفية</a>
           {% else %}
-          <a href="{{ url_for('test.create_test', city_id=selected_city_id) }}" class="btn btn-primary">
+          <a href="{{ url_for('test.create_test', laboratory_id=laboratory_id) }}" class="btn btn-primary">
             <i data-lucide="plus-circle"></i>
-            + إضافة تحليل جديد
+            إضافة تحليل جديد
           </a>
           {% endif %}
         </td>
@@ -268,7 +236,7 @@
 
   <nav class="pagination">
     {% if pagination.has_prev %}
-    <a href="{{ url_for('test.test_service', page=pagination.prev_num, per_page=per_page, search=search, city_id=selected_city_id or 'all', sync_status=sync_status) }}"
+    <a href="{{ url_for('test.test_service', page=pagination.prev_num, per_page=per_page, search=search, laboratory_id=laboratory_id, sync_status=sync_status) }}"
        class="pagination-btn">
       <i data-lucide="chevron-right"></i> السابق
     </a>
@@ -281,7 +249,7 @@
         {% if p == pagination.page %}
         <span class="pagination-page active">{{ p }}</span>
         {% else %}
-        <a href="{{ url_for('test.test_service', page=p, per_page=per_page, search=search, city_id=selected_city_id or 'all', sync_status=sync_status) }}"
+        <a href="{{ url_for('test.test_service', page=p, per_page=per_page, search=search, laboratory_id=laboratory_id, sync_status=sync_status) }}"
            class="pagination-page">{{ p }}</a>
         {% endif %}
       {% else %}
@@ -290,7 +258,7 @@
     {% endfor %}
 
     {% if pagination.has_next %}
-    <a href="{{ url_for('test.test_service', page=pagination.next_num, per_page=per_page, search=search, city_id=selected_city_id or 'all', sync_status=sync_status) }}"
+    <a href="{{ url_for('test.test_service', page=pagination.next_num, per_page=per_page, search=search, laboratory_id=laboratory_id, sync_status=sync_status) }}"
        class="pagination-btn">
       التالي <i data-lucide="chevron-left"></i>
     </a>
@@ -337,7 +305,7 @@
           <label class="field-label">المنطقة المستهدفة <span class="required-star">*</span></label>
           <select name="city_id" id="importCitySelect" class="form-control" required>
             {% for city in cities %}
-            <option value="{{ city.id }}" {% if selected_city_id == city.id %}selected{% endif %}>{{ city.name }}</option>
+            <option value="{{ city.id }}">{{ city.name }}</option>
             {% endfor %}
           </select>
         </div>
@@ -399,7 +367,7 @@
         </div>
         <div class="import-review-list" id="needsReviewList" style="display:none;"></div>
       </div>
-
+      <div class="alert alert-warning mt-3" id="importWarnings" style="display:none;"></div>
       <div id="importStep2Error" class="alert alert-error mt-3" style="display:none;"></div>
     </div>
 
@@ -418,6 +386,7 @@
         <span class="badge badge-warning">معلّق: <strong id="statPending">0</strong></span>
         <span class="badge badge-info">الإجمالي: <strong id="statTotal">0</strong></span>
       </div>
+      <div class="mt-2" id="importSummary" style="font-weight:600;"></div>
 
       <div id="importFinalAlert" class="alert alert-success mt-3" style="display:none;">
         تم استيراد قائمة الأسعار ومعالجة الفحوصات بنجاح!
@@ -554,7 +523,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!response.ok) throw new Error(data.error || 'فشلت معاينة الملف');
 
       previewToken = data.token;
-      document.getElementById('cntCreated').textContent = data.created || 0;
+      document.getElementById('cntCreated').textContent = data.new || 0;
       document.getElementById('cntUpdated').textContent = data.updated || 0;
       document.getElementById('cntUnchanged').textContent = data.unchanged || 0;
       document.getElementById('cntSkipped').textContent = (data.needs_review || []).length;
@@ -574,6 +543,10 @@ document.addEventListener('DOMContentLoaded', () => {
         `<div>• الصف ${item.row}: <strong>${escapeHtml(item.name || 'بدون اسم')}</strong> — ${escapeHtml(item.reason || '')}</div>`
       ).join('');
       reviewBox.style.display = reviews.length ? 'block' : 'none';
+      const warnBox = document.getElementById('importWarnings');
+      const warnings = data.warnings || [];
+      warnBox.innerHTML = warnings.map((w) => `<div>⚠ ${escapeHtml(w)}</div>`).join('');
+      warnBox.style.display = warnings.length ? 'block' : 'none';
       setStep(2);
     } catch (error) {
       showError('importStep1Error', error.message || 'حدث خطأ أثناء معاينة الملف');
@@ -604,6 +577,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'فشلت عملية الاستيراد');
       setStep(3);
+      document.getElementById('importSummary').textContent =
+      `تمت إضافة ${data.created} • تحديث ${data.updated} • حذف ${data.deleted}`;
       pollStatus();
     } catch (error) {
       showError('importStep2Error', error.message || 'حدث خطأ أثناء تنفيذ الاستيراد');
@@ -632,7 +607,7 @@ document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('statFailed').textContent = failed;
       document.getElementById('statPending').textContent = pending;
       document.getElementById('statTotal').textContent = total;
-      if (pending === 0) {
+      if (pending === 0 || data.status === 'done') {
         document.getElementById('importProgressText').textContent = 'اكتملت المعالجة';
         document.getElementById('importFinalAlert').textContent = failed
           ? `اكتمل الاستيراد مع ${failed} حالة فشل في المعالجة.`

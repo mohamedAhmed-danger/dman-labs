@@ -25,14 +25,9 @@ def test_service():
 
     cities = CityService.get_cities_by_laboratory(laboratory_id)
 
-    raw_city_id = request.args.get("city_id")
-    if raw_city_id == "all" or raw_city_id == "0":
-        selected_city_id = None
-    elif raw_city_id is not None and raw_city_id.isdigit():
-        selected_city_id = int(raw_city_id)
-    else:
-        # Default to first city by sort_order
-        selected_city_id = cities[0].id if cities else None
+    # The catalog is uniform across regions: no city filter on this page.
+    raw_city_id = None
+    selected_city_id = None
 
     tests_service = TestsService(laboratory_id=laboratory_id, city_id=selected_city_id)
     pagination, services, laboratories, message = tests_service.get_test_service_page_data(
@@ -43,10 +38,10 @@ def test_service():
     if pagination is None and message:
         flash(message, "error")
 
-    pending_query = LabService.query.filter_by(laboratory_id=laboratory_id, sync_status="pending")
-    if selected_city_id:
-        pending_query = pending_query.filter_by(city_id=selected_city_id)
-    pending_count = pending_query.count()
+    # The sync status belongs to the test itself (one vector per test), not to a city
+    pending_count = LabService.query.filter_by(
+        laboratory_id=laboratory_id, sync_status="pending"
+    ).count()
 
     return render_template(
         "test/test_service.html",
@@ -122,14 +117,7 @@ def import_test_prices_preview():
         if preview.get("error"):
             status = 413 if "حجم الملف" in preview["error"] else 400
             return jsonify({"error": preview["error"]}), status
-        return jsonify({
-            "token": preview["token"],
-            "created": preview["new"],
-            "updated": preview["price_changed"],
-            "unchanged": preview["unchanged"],
-            "needs_review": preview["needs_review"],
-            "would_delete": preview["would_delete"],
-        })
+        return jsonify(preview)
     except Exception as error:
         return jsonify({"error": f"حدث خطأ أثناء معاينة الملف: {error}"}), 500
 
@@ -177,7 +165,7 @@ def import_test_prices_status():
         return jsonify({key: int(progress.get(key, 0)) for key in ("total", "done", "failed", "pending")})
 
     totals = db.session.query(LabService.sync_status, db.func.count(LabService.id)).filter_by(
-        laboratory_id=city.laboratory_id, city_id=city.id
+        laboratory_id=city.laboratory_id
     ).group_by(LabService.sync_status).all()
     counts = dict(totals)
     pending = counts.get("pending", 0)
@@ -214,12 +202,12 @@ def create_test():
 
     if request.method == "GET":
         laboratories = tests_service.get_all_laboratories()
-        selected_city_id = request.args.get("city_id", type=int) or (cities[0].id if cities else None)
         return render_template(
             "test/test_form.html",
             laboratories=laboratories,
             cities=cities,
-            selected_city_id=selected_city_id,
+            city_prices={},
+            selected_city_id=request.args.get("city_id", type=int),
             is_edit=False
         )
 
@@ -227,9 +215,10 @@ def create_test():
     flash(message, "success" if success else "error")
 
     if success:
-        c_id = request.form.get("city_id")
-        return redirect(url_for("test.test_service", city_id=c_id))
-    return redirect(url_for("test.create_test"))
+        return redirect(url_for("test.test_service",
+                                city_id=request.args.get("city_id") or "all",
+                                laboratory_id=laboratory_id))
+    return redirect(url_for("test.create_test", laboratory_id=laboratory_id))
 
 
 @test_bp.route("/tests/<int:test_id>/edit", methods=["GET", "POST"])
@@ -251,7 +240,8 @@ def edit_test(test_id):
             service=service,
             laboratories=laboratories,
             cities=cities,
-            selected_city_id=service.city_id,
+            city_prices={cp.city_id: cp.price for cp in service.city_prices},
+            selected_city_id=request.args.get("city_id", type=int),
             is_edit=True
         )
 
@@ -259,7 +249,9 @@ def edit_test(test_id):
     flash(message, "success" if success else "error")
 
     if success:
-        return redirect(url_for("test.test_service", city_id=service.city_id))
+        return redirect(url_for("test.test_service",
+                                city_id=request.args.get("city_id") or "all",
+                                laboratory_id=service.laboratory_id))
     return redirect(url_for("test.edit_test", test_id=test_id))
 
 
@@ -268,10 +260,11 @@ def edit_test(test_id):
 def delete_test(test_id):
     tests_service = TestsService(test_id=test_id)
     test_obj, _ = tests_service.get_test()
-    c_id = test_obj.city_id if test_obj else None
+    lab_id = test_obj.laboratory_id if test_obj else 1
+    c_id = request.form.get("city_id") or request.args.get("city_id") or "all"
     service, message = tests_service.delete_test()
     flash(message, "success" if service else "error")
-    return redirect(url_for("test.test_service", city_id=c_id))
+    return redirect(url_for("test.test_service", city_id=c_id, laboratory_id=lab_id))
 
 
 @test_bp.route("/tests/generate", methods=["POST"])
@@ -298,6 +291,7 @@ def generate():
         form_data=request.form,
         laboratories=laboratories,
         cities=cities,
+        city_prices={},
         is_edit=False
     )
 
@@ -326,5 +320,6 @@ def regenerate():
         form_data=request.form,
         laboratories=laboratories,
         cities=cities,
+        city_prices={},
         is_edit=False
     )

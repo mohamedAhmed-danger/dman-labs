@@ -14,14 +14,14 @@ CONTEXT_BUDGET = 50
 def run_search(
     refined_queries: List[Any],
     laboratory_id: int,
-    city_id: int,
 ) -> Dict[str, Any]:
     """
-    Execute fuzzy and semantic search across active laboratory services
+    Execute fuzzy and semantic search across the laboratory's services
     for each refined query, then merge and rank the results.
+    The catalog is uniform across cities, so the search is not city-scoped.
     """
-    if not laboratory_id or not city_id:
-        raise ValueError("laboratory_id and city_id are required for search")
+    if not laboratory_id:
+        raise ValueError("laboratory_id is required for search")
     logger.info("🔎 [SEARCH MANAGER START] Received %d queries to search", len(refined_queries or []))
 
     if not refined_queries:
@@ -31,12 +31,12 @@ def run_search(
             "top_score": 0.0,
         }
 
-    # 1. Load active lab services from DB
+    # 1. Load lab services from DB
     try:
-        lab_services = get_all_active_lab_services_for_search(laboratory_id, city_id)
-        logger.info("📚 [SEARCH MANAGER] Loaded %d active lab services from DB for fuzzy matching", len(lab_services))
+        lab_services = get_all_active_lab_services_for_search(laboratory_id)
+        logger.info("📚 [SEARCH MANAGER] Loaded %d lab services from DB for fuzzy matching", len(lab_services))
     except Exception:
-        logger.exception("[SEARCH MANAGER] Failed to load active lab services from database")
+        logger.exception("[SEARCH MANAGER] Failed to load lab services from database")
         raise
 
     all_results = []
@@ -56,7 +56,6 @@ def run_search(
                 lab_services=lab_services,
                 limit=2,
                 laboratory_id=laboratory_id,
-                city_id=city_id,
             )
             logger.info("  ├─ [Fuzzy Search] Query #%d returned %d matches", idx, len(f_results))
             all_results.extend(f_results)
@@ -72,7 +71,6 @@ def run_search(
                 keywords=item.keywords,
                 limit=3,
                 laboratory_id=laboratory_id,
-                city_id=city_id,
             )
             logger.info("  └─ [Semantic Search] Query #%d returned %d matches", idx, len(s_results))
             all_results.extend(s_results)
@@ -82,7 +80,7 @@ def run_search(
 
     if not all_results and search_errors:
         raise RuntimeError(
-            "No search source completed successfully; refusing to report an empty city catalog."
+            "No search source completed successfully; refusing to report an empty catalog."
         )
     logger.info("📊 [SEARCH MANAGER] Total raw matches collected (Fuzzy + Semantic): %d", len(all_results))
 

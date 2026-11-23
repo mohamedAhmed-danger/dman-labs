@@ -11,30 +11,33 @@ logger = logging.getLogger(__name__)
 
 qdrant_client = QdrantClient(url=Config.QDRANT_URL, api_key=Config.QDRANT_API_KEY)
 
-
-def get_collection_name(laboratory_id: int, city_id: int) -> str:
-    """Returns the Qdrant collection name for a given laboratory and city."""
-    if not laboratory_id or not city_id:
-        raise ValueError("laboratory_id and city_id are required to compute collection name")
-    return f"tests_lab{laboratory_id}_city{city_id}"
+# collections we already verified in this process (avoids a network call per upsert)
+_ensured_collections: set[str] = set()
 
 
-def ensure_collection(laboratory_id: int, city_id: int) -> str:
-    """Ensures the Qdrant collection for a city exists, creating it if missing."""
-    if not laboratory_id or not city_id:
-        raise ValueError("laboratory_id and city_id are required")
-    col_name = get_collection_name(laboratory_id, city_id)
+def get_collection_name(laboratory_id: int) -> str:
+    """Returns the Qdrant collection name for a laboratory (one collection per lab)."""
+    if not laboratory_id:
+        raise ValueError("laboratory_id is required to compute collection name")
+    return f"tests_lab{laboratory_id}"
+
+
+def ensure_collection(laboratory_id: int) -> str:
+    """Ensures the Qdrant collection for a laboratory exists, creating it if missing."""
+    if not laboratory_id:
+        raise ValueError("laboratory_id is required")
+    col_name = get_collection_name(laboratory_id)
+    if col_name in _ensured_collections:
+        return col_name
     try:
         existing = {c.name for c in qdrant_client.get_collections().collections}
-        if col_name in existing:
-            logger.info("Qdrant collection '%s' already exists.", col_name)
-            return col_name
-
-        qdrant_client.create_collection(
-            collection_name=col_name,
-            vectors_config=VectorParams(size=Config.VECTOR_SIZE, distance=Distance.COSINE),
-        )
-        logger.info("Qdrant collection '%s' created successfully.", col_name)
+        if col_name not in existing:
+            qdrant_client.create_collection(
+                collection_name=col_name,
+                vectors_config=VectorParams(size=Config.VECTOR_SIZE, distance=Distance.COSINE),
+            )
+            logger.info("Qdrant collection '%s' created successfully.", col_name)
+        _ensured_collections.add(col_name)
         return col_name
     except Exception as e:
         logger.exception("Failed to ensure Qdrant collection %s", col_name)
@@ -49,29 +52,11 @@ def ensure_collection(laboratory_id: int, city_id: int) -> str:
         raise
 
 
-def drop_city_collection(laboratory_id: int, city_id: int) -> bool:
-    """Drops the Qdrant collection for a city when an empty city is deleted."""
-    if not laboratory_id or not city_id:
-        raise ValueError("laboratory_id and city_id are required")
-    col_name = get_collection_name(laboratory_id, city_id)
-    try:
-        existing = {c.name for c in qdrant_client.get_collections().collections}
-        if col_name in existing:
-            qdrant_client.delete_collection(collection_name=col_name)
-            logger.info("Qdrant collection '%s' deleted successfully.", col_name)
-        return True
-    except Exception as e:
-        logger.exception("Failed to delete Qdrant collection %s", col_name)
-        return False
-
-
 def upsert_test_vector(test_id: int, test_name: str, description: str, keywords: list[str],
-                       laboratory_id: int, city_id: int) -> bool:
-    """
-    Creates or updates vector for a test in its city collection in Qdrant.
-    """
-    if not laboratory_id or not city_id:
-        raise ValueError("laboratory_id and city_id are required")
+                       laboratory_id: int) -> bool:
+    """Creates or updates the vector for a test in its laboratory collection."""
+    if not laboratory_id:
+        raise ValueError("laboratory_id is required")
 
     keywords = keywords or []
 
@@ -81,14 +66,14 @@ def upsert_test_vector(test_id: int, test_name: str, description: str, keywords:
         logger.warning("Skipping vector upsert for test %s: %s", test_id, e)
         return False
 
+    # No price and no city in the payload: price is resolved from SQL at answer time.
     payload = {
         "service_id": test_id,
         "name": test_name,
         "laboratory_id": laboratory_id,
-        "city_id": city_id,
     }
 
-    target_collection = get_collection_name(laboratory_id, city_id)
+    target_collection = ensure_collection(laboratory_id)
 
     try:
         qdrant_client.upsert(
@@ -112,20 +97,15 @@ def upsert_test_vector(test_id: int, test_name: str, description: str, keywords:
     return True
 
 
-def upsert_test_vectors_batch(laboratory_id: int, city_id: int, items: list[dict], batch_size: int = 100) -> dict:
+def upsert_test_vectors_batch(laboratory_id: int, items: list[dict], batch_size: int = 100) -> dict:
     """
-    Upserts a batch of test vectors into the city collection in chunks (default 100).
-    Each item in items should be a dict containing:
-      - test_id (int)
-      - test_name (str)
-      - description (str, optional)
-      - keywords (list, optional)
+    Upserts a batch of test vectors into the laboratory collection in chunks (default 100).
+    Each item: test_id (int), test_name (str), description (str, optional), keywords (list, optional).
 
-    Returns:
-        {"succeeded": [test_ids], "failed": [{"test_id": ..., "error": ...}]}
+    Returns: {"succeeded": [test_ids], "failed": [{"test_id": ..., "error": ...}]}
     """
-    if not laboratory_id or not city_id:
-        raise ValueError("laboratory_id and city_id are required")
+    if not laboratory_id:
+        raise ValueError("laboratory_id is required")
 
     succeeded = []
     failed = []
@@ -133,7 +113,7 @@ def upsert_test_vectors_batch(laboratory_id: int, city_id: int, items: list[dict
     if not items:
         return {"succeeded": succeeded, "failed": failed}
 
-    target_collection = get_collection_name(laboratory_id, city_id)
+    target_collection = ensure_collection(laboratory_id)
     points_to_upsert = []
 
     for item in items:
@@ -148,7 +128,6 @@ def upsert_test_vectors_batch(laboratory_id: int, city_id: int, items: list[dict
                 "service_id": test_id,
                 "name": test_name,
                 "laboratory_id": laboratory_id,
-                "city_id": city_id,
             }
             points_to_upsert.append((test_id, PointStruct(id=test_id, vector=vector, payload=payload)))
         except Exception as e:
@@ -174,12 +153,12 @@ def upsert_test_vectors_batch(laboratory_id: int, city_id: int, items: list[dict
     return {"succeeded": succeeded, "failed": failed}
 
 
-def delete_test_vector(test_id: int, laboratory_id: int, city_id: int) -> bool:
-    """Deletes test vector from Qdrant city collection."""
-    if not laboratory_id or not city_id:
-        raise ValueError("laboratory_id and city_id are required")
+def delete_test_vector(test_id: int, laboratory_id: int) -> bool:
+    """Deletes a test vector from the laboratory collection."""
+    if not laboratory_id:
+        raise ValueError("laboratory_id is required")
 
-    target_collection = get_collection_name(laboratory_id, city_id)
+    target_collection = get_collection_name(laboratory_id)
 
     try:
         qdrant_client.delete(
@@ -202,19 +181,19 @@ def delete_test_vector(test_id: int, laboratory_id: int, city_id: int) -> bool:
     return True
 
 
-def get_test_vector(test_id: int, laboratory_id: int, city_id: int):
-    """Retrieves test vector by ID from city collection."""
-    if not laboratory_id or not city_id:
-        raise ValueError("laboratory_id and city_id are required")
+def get_test_vector(test_id: int, laboratory_id: int):
+    """Retrieves a test vector by ID from the laboratory collection."""
+    if not laboratory_id:
+        raise ValueError("laboratory_id is required")
 
-    target_collection = get_collection_name(laboratory_id, city_id)
+    target_collection = get_collection_name(laboratory_id)
 
     try:
         result = qdrant_client.retrieve(
             collection_name=target_collection,
             ids=[test_id],
         )
-    except Exception as e:
+    except Exception:
         logger.exception("Qdrant retrieve failed for test %s", test_id)
         raise
 

@@ -1,0 +1,112 @@
+<form method="POST" action="{{ form_action }}">
+
+  <div class="form-group" style="margin-bottom: 1.25rem;">
+    <label class="form-label" style="font-weight: 600; margin-bottom: 0.5rem; display: block;">
+      اسم الخصم <span class="text-danger">*</span>
+    </label>
+    <input type="text" name="name" class="form-control" placeholder="مثال: نقابة المهندسين" required
+           value="{{ v.name }}"
+           style="width: 100%; padding: 0.65rem 0.85rem; border: 1px solid #cbd5e1; border-radius: 8px;">
+  </div>
+
+  <div style="display: flex; gap: 1rem; margin-bottom: 1.25rem; flex-wrap: wrap;">
+    <div class="form-group" style="flex: 1; min-width: 200px;">
+      <label class="form-label" style="font-weight: 600; margin-bottom: 0.5rem; display: block;">نوع الخصم</label>
+      <select name="discount_type" class="form-control"
+              style="width: 100%; padding: 0.65rem 0.85rem; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff;">
+        <option value="percentage" {% if v.discount_type == 'percentage' %}selected{% endif %}>نسبة مئوية (%)</option>
+        <option value="fixed" {% if v.discount_type == 'fixed' %}selected{% endif %}>مبلغ ثابت (جنيه)</option>
+      </select>
+    </div>
+    <div class="form-group" style="flex: 1; min-width: 200px;">
+      <label class="form-label" style="font-weight: 600; margin-bottom: 0.5rem; display: block;">
+        قيمة الخصم <span class="text-danger">*</span>
+      </label>
+      <input type="number" step="any" min="0" name="value" class="form-control" placeholder="مثال: 20" required
+             value="{{ v.value }}"
+             style="width: 100%; padding: 0.65rem 0.85rem; border: 1px solid #cbd5e1; border-radius: 8px;">
+    </div>
+  </div>
+
+  <div class="form-group" style="margin-bottom: 1.25rem; padding: 1rem 1.1rem; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px;">
+    <label class="form-label" style="font-weight: 600; margin-bottom: 0.6rem; display: block;">المدن المتاحة</label>
+
+    <label style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; cursor: pointer;">
+      <input type="radio" name="scope" value="all" {% if v.scope != 'specific' %}checked{% endif %}>
+      <span>كل المدن</span>
+    </label>
+    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+      <input type="radio" name="scope" value="specific" {% if v.scope == 'specific' %}checked{% endif %}>
+      <span>مدن محددة</span>
+    </label>
+
+    <div id="cities-block" style="margin-top: 1rem; {% if v.scope != 'specific' %}display: none;{% endif %}">
+      <div style="margin-bottom: 0.9rem; color: #64748b; font-size: 0.8rem;">
+        اختر حالة الخصم في كل مدينة. المدن اللي "غير متاح" فيها مش هيظهر فيها الخصم خالص.
+      </div>
+      {% for city in cities %}
+      {% set st = v.city_status.get(city.id, '') %}
+      <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 0.6rem;">
+        <span style="flex: 0 0 160px; font-weight: 600;">{{ city.name }}</span>
+        <select name="city_status_{{ city.id }}" class="form-control"
+                style="flex: 1; padding: 0.6rem 0.85rem; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff;">
+          <option value="" {% if st == '' %}selected{% endif %}>غير متاح</option>
+          <option value="active" {% if st == 'active' %}selected{% endif %}>متاح ومفعّل</option>
+          <option value="inactive" {% if st == 'inactive' %}selected{% endif %}>متاح وموقوف</option>
+        </select>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="form-group" style="margin-bottom: 1.25rem;">
+    <label class="form-label" style="font-weight: 600; margin-bottom: 0.5rem; display: block;">
+      أسماء بديلة (اختياري)
+    </label>
+    <input type="text" name="aliases" class="form-control" placeholder="مثال: نقابة المهندسين, كارنيه المهندسين, المهندسين"
+           value="{{ v.aliases }}"
+           style="width: 100%; padding: 0.65rem 0.85rem; border: 1px solid #cbd5e1; border-radius: 8px;">
+    <div style="margin-top: 0.4rem; color: #64748b; font-size: 0.8rem;">
+      افصل بين الأسماء بفاصلة. بيساعد الذكاء الاصطناعي يفهم العميل لما يكتب الاسم بطريقة مختلفة.
+    </div>
+  </div>
+
+  <div class="form-group" style="margin-bottom: 1.25rem;">
+    <label class="form-label" style="font-weight: 600; margin-bottom: 0.5rem; display: block;">
+      الشروط والتعليمات (اختياري)
+    </label>
+    <textarea name="terms" class="form-control" rows="4" placeholder="مثال: يلزم إبراز الكارنيه الساري عند السحب"
+              style="width: 100%; padding: 0.65rem 0.85rem; border: 1px solid #cbd5e1; border-radius: 8px; line-height: 1.6;">{{ v.terms }}</textarea>
+  </div>
+
+  <div class="form-group" style="margin-bottom: 1.75rem;">
+    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-weight: 600;">
+      <input type="checkbox" name="is_active" {% if v.is_active %}checked{% endif %}>
+      <span>الخصم مفعّل</span>
+    </label>
+    <div style="margin-top: 0.4rem; color: #64748b; font-size: 0.8rem;">
+      لو قفلته، الخصم بيتوقف في كل المدن مرة واحدة.
+    </div>
+  </div>
+
+  <div style="display: flex; gap: 0.75rem; align-items: center;">
+    <button type="submit" class="btn btn-primary" style="padding: 0.65rem 1.5rem; font-weight: 600; display: flex; align-items: center; gap: 0.5rem;">
+      <i data-lucide="check"></i>
+      <span>{{ submit_label }}</span>
+    </button>
+    <a href="{{ url_for('discount.list_discounts') }}" class="btn btn-ghost" style="padding: 0.65rem 1.25rem;">
+      إلغاء والعودة
+    </a>
+  </div>
+</form>
+
+<script>
+  (function () {
+    var block = document.getElementById('cities-block');
+    document.querySelectorAll('input[name="scope"]').forEach(function (r) {
+      r.addEventListener('change', function () {
+        block.style.display = (this.value === 'specific' && this.checked) ? 'block' : 'none';
+      });
+    });
+  })();
+</script>

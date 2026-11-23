@@ -1,0 +1,82 @@
+{% extends 'base.html' %}
+
+{% block title %}الخصومات — معمل رعاية{% endblock %}
+{% block topbar_title %}الخصومات{% endblock %}
+{% block topbar_sub %}إدارة الخصومات والمدن اللي بتشتغل فيها{% endblock %}
+
+{% block content %}
+<div class="card" style="padding: 1.5rem;">
+
+  <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.25rem; gap: 1rem; flex-wrap: wrap;">
+    <h3 style="margin: 0; font-size: 1.15rem; font-weight: 700;">قائمة الخصومات ({{ discounts|length }})</h3>
+    <a href="{{ url_for('discount.add_discount') }}" class="btn btn-primary"
+       style="padding: 0.6rem 1.25rem; font-weight: 600; display: inline-flex; align-items: center; gap: 0.5rem;">
+      <i data-lucide="plus"></i>
+      <span>إضافة خصم</span>
+    </a>
+  </div>
+
+  {% if discounts %}
+  <div style="overflow-x: auto;">
+    <table style="width: 100%; border-collapse: collapse;">
+      <thead>
+        <tr style="text-align: right; border-bottom: 2px solid #e2e8f0; color: #64748b; font-size: 0.85rem;">
+          <th style="padding: 0.75rem;">الاسم</th>
+          <th style="padding: 0.75rem;">القيمة</th>
+          <th style="padding: 0.75rem;">المدن</th>
+          <th style="padding: 0.75rem;">الحالة</th>
+          <th style="padding: 0.75rem;">إجراءات</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in discounts %}
+        <tr style="border-bottom: 1px solid #f1f5f9;">
+          <td style="padding: 0.75rem; font-weight: 600;">{{ d.name }}</td>
+          <td style="padding: 0.75rem;">
+            {% if d.discount_type == 'percentage' %}{{ '%g'|format(d.value) }}%{% else %}{{ '%g'|format(d.value) }} ج.م{% endif %}
+          </td>
+          <td style="padding: 0.75rem;">
+            {% if not d.city_links %}
+              <span style="color: #475569;">كل المدن</span>
+            {% else %}
+              <div style="display: flex; flex-wrap: wrap; gap: 0.35rem;">
+                {% for link in d.city_links %}
+                <span style="padding: 0.15rem 0.6rem; border-radius: 999px; font-size: 0.8rem;
+                             {% if link.is_active %}background: #dcfce7; color: #166534;{% else %}background: #f1f5f9; color: #64748b; text-decoration: line-through;{% endif %}">
+                  {{ link.city.name }}
+                </span>
+                {% endfor %}
+              </div>
+            {% endif %}
+          </td>
+          <td style="padding: 0.75rem;">
+            {% if d.is_active %}
+              <span style="color: #166534; font-weight: 600;">مفعّل</span>
+            {% else %}
+              <span style="color: #b91c1c; font-weight: 600;">موقوف</span>
+            {% endif %}
+          </td>
+          <td style="padding: 0.75rem;">
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <a href="{{ url_for('discount.discount_detail', discount_id=d.id) }}" class="btn btn-ghost"
+                 style="padding: 0.4rem 0.9rem;">تعديل</a>
+              <form method="POST" action="{{ url_for('discount.toggle_discount', discount_id=d.id) }}" style="margin: 0;">
+                <button type="submit" class="btn btn-ghost" style="padding: 0.4rem 0.9rem;">
+                  {% if d.is_active %}إيقاف{% else %}تفعيل{% endif %}
+                </button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div style="text-align: center; padding: 2.5rem 1rem; color: #64748b;">
+    <p style="margin: 0 0 1rem 0;">لسه مفيش خصومات. ابدأ بإضافة أول خصم.</p>
+    <a href="{{ url_for('discount.add_discount') }}" class="btn btn-primary" style="padding: 0.6rem 1.25rem;">إضافة خصم</a>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

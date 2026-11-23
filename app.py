@@ -23,7 +23,7 @@ from routes.public_routes import public_bp
 from routes.city_routes import city_bp
 from routes.branch_routes import branch_bp
 from routes.price_routes import price_bp
-
+from routes.discount_routes import discount_bp
 
 import logging
 from logging.handlers import RotatingFileHandler
@@ -101,6 +101,7 @@ def create_app(config_class=Config):
     app.register_blueprint(price_bp)
     from routes import results
     app.register_blueprint(results.bp)
+    app.register_blueprint(discount_bp)
     # Context processor for sidebar badges and layout counters
     @app.context_processor
     def inject_global_counts():

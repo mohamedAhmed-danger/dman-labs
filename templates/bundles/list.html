@@ -1,19 +1,19 @@
 {% extends 'base.html' %}
 
-{% block title %}إدارة الباقات الفحصية — معامل ضمان{% endblock %}
+{% block title %}إدارة الباقات الفحصية — معمل رعاية{% endblock %}
 {% block topbar_title %}إدارة الباقات الفحصية{% endblock %}
 {% block topbar_sub %}قائمة الباقات والعروض المتاحة لمنظومة المعمل{% endblock %}
 
 {% block topbar_actions %}
-  {% if bundles|length < 5 %}
+  {% if bundles|length < 25 %}
     <a href="{{ url_for('bundle.add_bundle') }}" class="btn btn-primary">
       <i data-lucide="plus-circle"></i>
-      <span>إضافة باقة جديدة ({{ bundles|length }}/5)</span>
+      <span>إضافة باقة جديدة ({{ bundles|length }}/25)</span>
     </a>
   {% else %}
     <button class="btn btn-secondary" disabled>
       <i data-lucide="lock"></i>
-      <span>الحد الأقصى (5/5)</span>
+      <span>الحد الأقصى (25/25)</span>
     </button>
   {% endif %}
 {% endblock %}
@@ -30,7 +30,7 @@
     background: #e2e8f0; overflow: hidden;
   }
   .bundles-summary .bar > span {
-    display: block; height: 100%; background: var(--brand-purple-700, #411675); border-radius: 99px;
+    display: block; height: 100%; background: var(--primary); border-radius: 99px;
   }
 
   .bundles-grid {
@@ -51,7 +51,7 @@
   .bundle-name { font-size: 1.1rem; font-weight: 700; color: #1e293b; line-height: 1.5; margin: 0; }
   .bundle-id { font-size: .8rem; color: #94a3b8; margin-top: .15rem; }
   .bundle-price { text-align: left; white-space: nowrap; }
-  .bundle-price b { font-size: 1.6rem; font-weight: 800; color: #0369a1; line-height: 1.1; }
+  .bundle-price b { font-size: 1.6rem; font-weight: 800; color: var(--accent); line-height: 1.1; }
   .bundle-price small { font-size: .85rem; color: #64748b; margin-right: .25rem; }
 
   .bundle-desc {
@@ -61,10 +61,10 @@
   .bundle-desc.open { -webkit-line-clamp: unset; display: block; }
   .bundle-more {
     align-self: flex-start; background: none; border: 0; padding: 0;
-    color: var(--brand-purple-700, #411675); font-size: .85rem; font-weight: 600; cursor: pointer;
+    color: var(--primary); font-size: .85rem; font-weight: 600; cursor: pointer;
   }
   .bundle-more:hover { text-decoration: underline; }
-  .bundle-more:focus-visible { outline: 2px solid var(--brand-purple-700, #411675); outline-offset: 3px; border-radius: 4px; }
+  .bundle-more:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; border-radius: 4px; }
 
   .bundle-instructions {
     margin: .9rem 0 .2rem; padding: .7rem .9rem; border-radius: 10px;
@@ -72,6 +72,13 @@
     font-size: .85rem; line-height: 1.8;
   }
   .bundle-instructions strong { display: block; margin-bottom: .15rem; font-size: .8rem; }
+
+  .bundle-cities { margin: .9rem 0 .2rem; font-size: .85rem; }
+  .bundle-cities strong { display: block; margin-bottom: .4rem; font-size: .8rem; color: #64748b; }
+  .city-chip {
+    display: inline-block; margin: 0 0 .35rem .35rem; padding: .25rem .65rem;
+    border-radius: 99px; background: #f1f5f9; color: #334155; font-size: .8rem;
+  }
 
   .bundle-actions {
     display: flex; gap: .5rem; margin-top: 1.1rem; padding-top: 1rem;
@@ -87,8 +94,8 @@
 </style>
 
 <div class="bundles-summary">
-  <span><strong>{{ bundles|length }}</strong> من 5 باقات</span>
-  <div class="bar"><span style="width: {{ (bundles|length / 5 * 100)|round|int }}%;"></span></div>
+  <span><strong>{{ bundles|length }}</strong> من 25 باقة</span>
+  <div class="bar"><span style="width: {{ (bundles|length / 25 * 100)|round|int }}%;"></span></div>
 </div>
 
 {% if bundles %}
@@ -101,7 +108,11 @@
         <div class="bundle-id">باقة رقم {{ b.id }}</div>
       </div>
       <div class="bundle-price">
-        <b>{{ "%.0f"|format(b.price) }}</b><small>ج.م</small>
+        {% if b.price is not none %}
+          <b>{{ "%.0f"|format(b.price) }}</b><small>ج.م</small>
+        {% else %}
+          <small>السعر حسب المدينة</small>
+        {% endif %}
       </div>
     </div>
 
@@ -112,6 +123,15 @@
     <div class="bundle-instructions">
       <strong>تعليمات المريض</strong>
       {{ b.instructions }}
+    </div>
+    {% endif %}
+
+    {% if b.city_prices %}
+    <div class="bundle-cities">
+      <strong>أسعار المدن</strong>
+      {% for cp in b.city_prices %}
+        <span class="city-chip">{{ cp.city.name }}: {{ "%.0f"|format(cp.price) }} ج.م</span>
+      {% endfor %}
     </div>
     {% endif %}
 
@@ -130,7 +150,16 @@
   {% endfor %}
 </div>
 {% else %}
-<div class="bundles-empty">لا يوجد باقات مضافة حتى الآن.</div>
+<div class="card empty-state" style="margin-top: 10px;">
+  <div class="ts-empty-icon"><i data-lucide="layers"></i></div>
+  <h4>لا توجد باقات فحصية مضافة</h4>
+  <p>أضف باقات الفحص الشامل والعروض المعملية لتظهر في النظام وتساعد الذكاء الاصطناعي في الرد.</p>
+  {% if bundles|length < 25 %}
+  <a href="{{ url_for('bundle.add_bundle') }}" class="btn btn-primary">
+    <i data-lucide="plus-circle"></i> إضافة باقة فحصية جديدة
+  </a>
+  {% endif %}
+</div>
 {% endif %}
 
 <script>

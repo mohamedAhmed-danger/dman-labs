@@ -1,28 +1,91 @@
 import logging
 
+from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import selectinload
 
-from models.models import db, LabService, Laboratory, City
+from models.models import db, LabService, LabServiceCityPrice, Laboratory, City
 from services.shared.vector_service import upsert_test_vector, delete_test_vector
 from services.shared.generation_service import regenerate_test, generate_test
 from schemas.generation import TestGenerationResult
 
 logger = logging.getLogger(__name__)
 
+DUPLICATE_TEST_MSG = "التحليل موجود بالفعل في هذا المعمل"
+NOT_FOUND_MSG = "Test not found"
+INVALID_PRICE_MSG = "سعر التحليل غير صحيح"
 
-def _resolve_city(city_id: int, laboratory_id: int):
-    """
-    Load the City row and validate it belongs to the given laboratory.
-    Returns (City, None) on success or (None, error_message) on failure.
-    """
-    if not city_id:
-        return None, "معرّف المدينة مطلوب"
-    city = db.session.get(City, city_id)
-    if not city:
-        return None, "المدينة غير موجودة"
-    if laboratory_id and city.laboratory_id != laboratory_id:
-        return None, "المدينة لا تنتمي إلى هذا المعمل"
-    return city, None
+
+def _available_in_city(city_id: int):
+    """SQL condition: the test is available in this city.
+    Available = it has a price row for the city OR it has a default price."""
+    return or_(
+        LabService.price.isnot(None),
+        LabService.city_prices.any(LabServiceCityPrice.city_id == city_id),
+    )
+
+
+def _parse_price(raw):
+    """Returns (value, error). Empty input -> (None, None)."""
+    if raw is None or str(raw).strip() == "":
+        return None, None
+    try:
+        val = float(raw)
+    except (ValueError, TypeError):
+        return None, "السعر يجب أن يكون رقماً صحيحاً"
+    if val < 0:
+        return None, INVALID_PRICE_MSG
+    return val, None
+
+
+def _collect_city_prices(form_data) -> dict:
+    """Collect every form field named city_price_<id> into {city_id: raw_value}.
+    Empty values are kept (they mean 'clear this city's price')."""
+    prices = {}
+    for key in form_data.keys():
+        if key.startswith("city_price_"):
+            suffix = key[len("city_price_"):]
+            if suffix.isdigit():
+                prices[int(suffix)] = form_data.get(key)
+    return prices
+
+
+def _validate_city_prices(prices: dict, laboratory_id: int):
+    """Validate {city_id: raw} against the laboratory's cities.
+    Returns ({city_id: float | None}, error). None means 'no price / delete'."""
+    if not prices:
+        return {}, None
+    valid_ids = {
+        c.id for c in City.query.filter_by(laboratory_id=laboratory_id)
+        .with_entities(City.id).all()
+    }
+    parsed = {}
+    for cid, raw in prices.items():
+        try:
+            cid = int(cid)
+        except (ValueError, TypeError):
+            return None, "معرّف المدينة غير صحيح"
+        if cid not in valid_ids:
+            return None, "المدينة لا تنتمي إلى هذا المعمل"
+        val, err = _parse_price(raw)
+        if err:
+            return None, err
+        parsed[cid] = val
+    return parsed, None
+
+
+def _apply_city_prices(test: LabService, parsed: dict):
+    """Add / update / delete city price rows on a test (no commit)."""
+    existing = {cp.city_id: cp for cp in test.city_prices}
+    for cid, val in parsed.items():
+        row = existing.get(cid)
+        if val is None:
+            if row:
+                test.city_prices.remove(row)  # delete-orphan removes the row
+        elif row:
+            row.price = val
+        else:
+            test.city_prices.append(LabServiceCityPrice(city_id=cid, price=val))
 
 
 def _parse_tags(raw_list, fallback_str=None):
@@ -49,35 +112,28 @@ def _parse_tags(raw_list, fallback_str=None):
 
 
 class TestsService:
-    # Initialize the tests service with optional test ID, LabService model, laboratory ID, and city ID
+    # city_id here is only the "selected city for display/pricing", not a property of the test.
     def __init__(self, test_id=None, test=None, laboratory_id=None, city_id=None):
         """Init with a test_id, a pre-loaded LabService, or laboratory_id/city_id.
-        If `test` is given, test_id/laboratory_id/city_id are derived from it."""
+        If `test` is given, test_id/laboratory_id are derived from it."""
         self.test_id = test_id
         self._test = test
         self.laboratory_id = laboratory_id
         self.city_id = city_id
         if test:
             self.test_id = test.id
-            if hasattr(test, 'laboratory_id') and test.laboratory_id is not None:
+            if getattr(test, 'laboratory_id', None) is not None:
                 self.laboratory_id = test.laboratory_id
-            if hasattr(test, 'city_id') and test.city_id is not None:
-                self.city_id = test.city_id
 
-    # Lazily fetch and return the cached LabService model instance
     @property
     def test(self):
         """Lazily load and cache the LabService for self.test_id."""
         if self._test is None and self.test_id is not None:
             self._test = db.session.get(LabService, self.test_id)
-            if self._test:
-                if hasattr(self._test, 'laboratory_id') and self.laboratory_id is None:
-                    self.laboratory_id = self._test.laboratory_id
-                if hasattr(self._test, 'city_id') and self.city_id is None:
-                    self.city_id = self._test.city_id
+            if self._test and self.laboratory_id is None:
+                self.laboratory_id = self._test.laboratory_id
         return self._test
 
-    # Retrieve a specific test service by ID or instance state
     def get_test(self, test_id=None):
         """Fetch a test by ID (or self.test_id), using the instance cache when it matches. Returns (LabService or None, message)."""
         target_id = test_id or self.test_id
@@ -95,10 +151,8 @@ class TestsService:
                 if target_id == self.test_id or self.test_id is None:
                     self._test = test
                     self.test_id = test.id
-                    if hasattr(test, 'laboratory_id') and self.laboratory_id is None:
+                    if self.laboratory_id is None:
                         self.laboratory_id = test.laboratory_id
-                    if hasattr(test, 'city_id') and self.city_id is None:
-                        self.city_id = test.city_id
                 return test, "Test retrieved successfully"
             else:
                 return None, "Test not found"
@@ -106,29 +160,26 @@ class TestsService:
             logger.exception("Failed to fetch test %s: %s", target_id, e)
             return None, "حدث خطأ أثناء جلب بيانات التحليل"
 
-    # Backward-compatible alias to retrieve a test service by ID
     def get_test_by_id(self, test_id=None):
         """Backward-compatible alias for get_test()."""
         return self.get_test(test_id=test_id)
 
-
-    # Retrieve paginated test services filtered by search term, laboratory ID, city ID, and sync_status
     def get_paginated_tests(self, page: int = 1, per_page: int = 10, search: str = None,
                             laboratory_id: int = None, city_id: int = None, sync_status: str = None):
-        """Paginated LabService list, optionally filtered by name (ILIKE), laboratory_id, city_id, and sync_status.
-        Ordered ascending by id (id.asc()).
-        """
+        """Paginated LabService list, optionally filtered by name (ILIKE), laboratory_id, sync_status
+        and city (tests available in that city). Ordered ascending by id.
+        City prices are eager-loaded to avoid one query per row."""
         lab_id = laboratory_id or self.laboratory_id
         c_id = city_id or self.city_id
         try:
-            query = LabService.query
+            query = LabService.query.options(selectinload(LabService.city_prices))
             if search and search.strip():
                 search_term = f"%{search.strip()}%"
                 query = query.filter(LabService.name.ilike(search_term))
             if lab_id:
                 query = query.filter(LabService.laboratory_id == lab_id)
             if c_id:
-                query = query.filter(LabService.city_id == c_id)
+                query = query.filter(_available_in_city(c_id))
             if sync_status:
                 query = query.filter(LabService.sync_status == sync_status)
 
@@ -142,10 +193,10 @@ class TestsService:
             logger.exception("Failed to paginate tests: %s", e)
             return None, "حدث خطأ أثناء جلب قائمة التحاليل"
 
-    # Search laboratory test services for typeahead / autocomplete
     def search_services(self, query: str = "", limit: int = 15, laboratory_id: int = None, city_id: int = None):
         """Autocomplete search over name/aliases/keywords, ranked by match priority.
-        Returns a list of dicts (id, name, price, patient_instructions), or [] on no query or error."""
+        Returns a list of dicts (id, name, price, patient_instructions), or [] on no query or error.
+        The price is the city price when city_id is given, otherwise the default price."""
         if not query or not query.strip():
             return []
 
@@ -155,7 +206,7 @@ class TestsService:
         c_id = city_id or self.city_id
 
         try:
-            from sqlalchemy import or_, cast, String, case
+            from sqlalchemy import cast, String, case
 
             query_filter = or_(
                 LabService.name.ilike(search_term),
@@ -163,11 +214,11 @@ class TestsService:
                 cast(LabService.keywords, String).ilike(search_term),
             )
 
-            stmt = LabService.query.filter(query_filter)
+            stmt = LabService.query.options(selectinload(LabService.city_prices)).filter(query_filter)
             if lab_id:
                 stmt = stmt.filter(LabService.laboratory_id == lab_id)
             if c_id:
-                stmt = stmt.filter(LabService.city_id == c_id)
+                stmt = stmt.filter(_available_in_city(c_id))
 
             priority = case(
                 (LabService.name.ilike(clean_query), 0),
@@ -178,55 +229,58 @@ class TestsService:
 
             services = stmt.order_by(priority, LabService.name.asc()).limit(limit).all()
 
-            return [
-                {
+            results = []
+            for s in services:
+                price = s.get_price_for_city(c_id) if c_id else s.price
+                results.append({
                     "id": s.id,
                     "name": s.name,
-                    "price": float(s.price or 0),
+                    "price": float(price) if price is not None else None,
                     "patient_instructions": (s.patient_instructions[:80] + "...") if s.patient_instructions and len(s.patient_instructions) > 80 else (s.patient_instructions or "")
-                }
-                for s in services
-            ]
+                })
+            return results
         except Exception as e:
             logger.exception("search_services failed for query=%r: %s", clean_query, e)
             return []
 
-    # Create and persist a new laboratory service and index its vector embedding
-    def create_lab_service(self, laboratory_id: int = None, city_id: int = None, name: str = None,
+    def create_lab_service(self, laboratory_id: int = None, name: str = None,
                            price: float = None, description: str = None,
                            patient_instructions: str = None, duration: int = None,
                            sample_type: str = None, keywords: list[str] = None,
-                           alias_name: list[str] = None):
-        """Create a LabService and index it in Qdrant. city_id is required.
-        Validates that the city belongs to the laboratory.
-        Duplicate names (per city) are rejected via a pre-check plus an IntegrityError catch.
+                           alias_name: list[str] = None, city_prices: dict = None):
+        """Create a LabService (once per laboratory) and index it in Qdrant.
+        price        : optional default price (used for cities without their own price).
+        city_prices  : optional {city_id: price}; empty values are skipped.
+        Duplicate names (per laboratory) are rejected via a pre-check plus an IntegrityError catch.
         Returns (LabService or None, message).
         """
         lab_id = laboratory_id or self.laboratory_id
-        c_id = city_id or self.city_id
         try:
             name = name.strip() if name else ""
             if not name:
                 return None, "اسم التحليل مطلوب"
             if not lab_id:
                 return None, "معرّف المعمل مطلوب"
-            if not c_id:
-                return None, "يرجى اختيار المدينة"
 
-            # Validate that city belongs to the laboratory
-            city, city_err = _resolve_city(c_id, lab_id)
-            if not city:
-                return None, city_err
+            default_price, err = _parse_price(price)
+            if err:
+                return None, err
 
-            existing_test = LabService.query.filter_by(city_id=c_id, name=name).first()
-            if existing_test:
-                return None, "التحليل موجود بالفعل في هذه المدينة"
+            parsed_prices, err = _validate_city_prices(city_prices or {}, lab_id)
+            if err:
+                return None, err
+            parsed_prices = {cid: v for cid, v in parsed_prices.items() if v is not None}
+
+            if default_price is None and not parsed_prices:
+                return None, "يجب إدخال سعر افتراضي أو سعر لمدينة واحدة على الأقل"
+
+            if LabService.query.filter_by(laboratory_id=lab_id, name=name).first():
+                return None, DUPLICATE_TEST_MSG
 
             new_test = LabService(
                 laboratory_id=lab_id,
-                city_id=c_id,
                 name=name,
-                price=price,
+                price=default_price,
                 description=description,
                 patient_instructions=patient_instructions,
                 duration=duration,
@@ -234,18 +288,20 @@ class TestsService:
                 keywords=keywords,
                 alias_name=alias_name
             )
+            for cid, val in parsed_prices.items():
+                new_test.city_prices.append(LabServiceCityPrice(city_id=cid, price=val))
+
             db.session.add(new_test)
-            db.session.commit()
+            db.session.commit()  # test + city prices saved together
             self._test = new_test
             self.test_id = new_test.id
             self.laboratory_id = new_test.laboratory_id
-            self.city_id = new_test.city_id
 
             try:
                 upsert_test_vector(
                     new_test.id, new_test.name,
                     new_test.description or "", new_test.keywords or [],
-                    laboratory_id=lab_id, city_id=c_id
+                    laboratory_id=lab_id
                 )
                 new_test.sync_status = "ok"
             except Exception as ve:
@@ -258,27 +314,54 @@ class TestsService:
             return new_test, "Test created successfully"
         except IntegrityError as e:
             db.session.rollback()
-            logger.warning("IntegrityError creating test name=%r city_id=%r: %s", name, c_id, e)
-            return None, "التحليل موجود بالفعل في هذه المدينة"
+            logger.warning("IntegrityError creating test name=%r lab=%r: %s", name, lab_id, e)
+            return None, DUPLICATE_TEST_MSG
         except Exception as e:
             db.session.rollback()
             logger.exception("Failed to create test name=%r: %s", name, e)
             return None, "حدث خطأ أثناء إنشاء التحليل"
 
-    # Update an existing test service and refresh its vector index
+    def set_city_prices(self, prices: dict, test_id: int = None):
+        """
+        prices: {city_id: "price"}
+        - price given -> add or update the price for that city
+        - empty       -> delete that city's price
+        Returns (LabService or None, message).
+        """
+        try:
+            target_id = test_id or self.test_id
+            test = self._test if (self._test and (not target_id or self._test.id == target_id)) \
+                else (db.session.get(LabService, target_id) if target_id else None)
+            if not test:
+                return None, NOT_FOUND_MSG
+
+            parsed, err = _validate_city_prices(prices or {}, test.laboratory_id)
+            if err:
+                return None, err
+
+            _apply_city_prices(test, parsed)
+            db.session.commit()
+            self._test = test
+            self.test_id = test.id
+            return test, "تم حفظ أسعار المدن بنجاح"
+        except Exception as e:
+            db.session.rollback()
+            logger.exception("Failed to set city prices for test %s: %s", test_id, e)
+            return None, "حدث خطأ أثناء حفظ أسعار المدن"
+
     def update_test(self, test_id: int = None, name: str = None, price: float = None, description: str = None,
                     instructions: str = None, duration: int = None, sample_type: str = None,
                     keywords: list[str] = None, alias_name: list[str] = None, laboratory_id: int = None,
-                    city_id: int = None):
+                    city_id: int = None, city_prices: dict = None):
         """Update the given non-None fields on a LabService and refresh its vector index.
-        city_id is READ-ONLY on edit: passing a city_id that differs from the test's city_id
-        is rejected immediately.
-        Only name/description/keywords/alias_name changes trigger re-embedding; a price-only
-        change commits to the DB and skips Qdrant.
+        price       : the DEFAULT price (None = unchanged).
+        city_prices : optional {city_id: price}; empty value deletes that city's price.
+        city_id     : deprecated, ignored (tests no longer belong to a city).
+        The laboratory of a test cannot be changed (its vector lives in the lab collection).
+        Only name/description/keywords/alias_name changes trigger re-embedding.
         Returns (LabService or None, message); None means not found or the update failed.
         """
         target_id = test_id or self.test_id
-        lab_id = laboratory_id or self.laboratory_id
         try:
             test = None
             if self._test and (not target_id or self._test.id == target_id):
@@ -287,22 +370,25 @@ class TestsService:
                 test = db.session.get(LabService, target_id)
 
             if not test:
-                return None, "Test not found"
+                return None, NOT_FOUND_MSG
 
-            # city_id is read-only — reject any attempt to change it
-            if city_id is not None and city_id != test.city_id:
-                return None, "لا يمكن تغيير مدينة التحليل بعد إنشائه"
+            if laboratory_id is not None and laboratory_id != test.laboratory_id:
+                return None, "لا يمكن تغيير معمل التحليل بعد إنشائه"
 
-            effective_lab_id = lab_id or test.laboratory_id
-            effective_city_id = test.city_id  # always the test's existing city
+            parsed_prices = None
+            if city_prices:
+                parsed_prices, err = _validate_city_prices(city_prices, test.laboratory_id)
+                if err:
+                    return None, err
 
-            if lab_id is not None:
-                test.laboratory_id = lab_id
-                effective_lab_id = lab_id
+            if price is not None:
+                price_val, err = _parse_price(price)
+                if err:
+                    return None, err
+                test.price = price_val
+
             if name is not None:
                 test.name = name
-            if price is not None:
-                test.price = price
             if description is not None:
                 test.description = description
             if instructions is not None:
@@ -315,12 +401,13 @@ class TestsService:
                 test.keywords = keywords
             if alias_name is not None:
                 test.alias_name = alias_name
+            if parsed_prices:
+                _apply_city_prices(test, parsed_prices)
 
             db.session.commit()
             self._test = test
             self.test_id = test.id
             self.laboratory_id = test.laboratory_id
-            self.city_id = test.city_id
 
             # Only re-embed when semantic fields changed (name / description / keywords / alias)
             semantic_fields_changed = any(f is not None for f in [name, description, keywords, alias_name])
@@ -329,7 +416,7 @@ class TestsService:
                     upsert_test_vector(
                         test.id, test.name,
                         test.description or "", test.keywords or [],
-                        laboratory_id=effective_lab_id, city_id=effective_city_id
+                        laboratory_id=test.laboratory_id
                     )
                     test.sync_status = "ok"
                 except Exception as ve:
@@ -343,15 +430,15 @@ class TestsService:
         except IntegrityError as e:
             db.session.rollback()
             logger.warning("IntegrityError updating test %s: %s", target_id, e)
-            return None, "التحليل موجود بالفعل في هذه المدينة"
+            return None, DUPLICATE_TEST_MSG
         except Exception as e:
             db.session.rollback()
             logger.exception("Failed to update test %s: %s", target_id, e)
             return None, "حدث خطأ أثناء تحديث بيانات التحليل"
 
-    # Delete a test service and remove its corresponding vector from Qdrant
     def delete_test(self, test_id: int = None):
-        """Delete a test and remove its vector from Qdrant. Returns (deleted LabService or None, message)."""
+        """Delete a test (its city prices go with it via cascade) and remove its vector from Qdrant.
+        Returns (deleted LabService or None, message)."""
         target_id = test_id or self.test_id
         try:
             test = None
@@ -361,17 +448,16 @@ class TestsService:
                 test = db.session.get(LabService, target_id)
 
             if not test:
-                return None, "Test not found"
+                return None, NOT_FOUND_MSG
 
             test_id_copy = test.id
             lab_id_copy = test.laboratory_id
-            city_id_copy = test.city_id
             db.session.delete(test)
             db.session.commit()
             self._test = None
 
             try:
-                delete_test_vector(test_id_copy, laboratory_id=lab_id_copy, city_id=city_id_copy)
+                delete_test_vector(test_id_copy, laboratory_id=lab_id_copy)
             except Exception as ve:
                 logger.warning("Failed to delete vector for test %s: %s", test_id_copy, ve)
 
@@ -381,13 +467,11 @@ class TestsService:
             logger.exception("Failed to delete test %s: %s", target_id, e)
             return None, "حدث خطأ أثناء حذف التحليل"
 
-    # Retrieve all registered laboratories ordered alphabetically by name
     def get_all_laboratories(self):
         """All laboratories, ordered alphabetically by name."""
         from services.domain.laboratory_service import LaboratoryService
         return LaboratoryService.get_laboratories_ordered_by_name()
 
-    # Compile pagination, services list, and laboratories for dashboard view rendering
     def get_test_service_page_data(self, page=1, per_page=10, search="", laboratory_id=None, city_id=None, sync_status=None):
         """Bundle pagination + services + laboratories for the dashboard view.
         page/per_page are clamped (page>=1, 1<=per_page<=100)."""
@@ -407,25 +491,19 @@ class TestsService:
 
         return pagination, services, laboratories, message
 
-    # Validate and process submitted HTML form data to create a new test service
     def handle_create_test(self, form_data):
-        """Validate form_data (name, laboratory_id, city_id, price required) and create a test.
+        """Validate form_data and create a test.
+        Required: name, laboratory_id, and at least one price (default `price` or any `city_price_<id>`).
         Returns (success, message) — message is user-facing Arabic."""
         try:
             name = form_data.get("name", "").strip()
-            price = form_data.get("price")
             duration = form_data.get("duration")
             laboratory_id = form_data.get("laboratory_id") or self.laboratory_id
-            city_id = form_data.get("city_id") or self.city_id
 
             if not name:
                 return False, "اسم التحليل مطلوب"
             if not laboratory_id:
                 return False, "يرجى اختيار المعمل"
-            if not city_id:
-                return False, "يرجى اختيار المدينة"
-            if not price:
-                return False, "سعر التحليل مطلوب"
 
             keywords_raw = _parse_tags(
                 form_data.getlist("keywords") or form_data.getlist("generated_keywords"),
@@ -438,9 +516,9 @@ class TestsService:
 
             service, message = self.create_lab_service(
                 laboratory_id=int(laboratory_id),
-                city_id=int(city_id),
                 name=name,
-                price=float(price),
+                price=form_data.get("price"),
+                city_prices=_collect_city_prices(form_data),
                 duration=int(duration) if duration else None,
                 patient_instructions=form_data.get("patient_instructions") or form_data.get("instructions"),
                 description=form_data.get("description"),
@@ -460,10 +538,10 @@ class TestsService:
             logger.exception("handle_create_test failed: %s", e)
             return False, "حدث خطأ أثناء إضافة التحليل"
 
-    # Validate and process submitted form data to update an existing test service
     def handle_update_test(self, form_data, test_id=None):
         """Validate form_data and update a test. Accepts (form_data, test_id) or the legacy
         inverted (test_id, form_data) call shape — auto-detected.
+        Reads the default `price` and the per-city `city_price_<id>` fields.
         Returns (success, message).
         """
         if isinstance(form_data, int) or (isinstance(test_id, dict) or hasattr(test_id, 'getlist')):
@@ -477,7 +555,6 @@ class TestsService:
             price = actual_form_data.get("price")
             duration = actual_form_data.get("duration")
             laboratory_id = actual_form_data.get("laboratory_id") or self.laboratory_id
-            city_id = actual_form_data.get("city_id") or self.city_id
 
             keywords_raw = _parse_tags(
                 actual_form_data.getlist("keywords") or actual_form_data.getlist("generated_keywords"),
@@ -491,7 +568,7 @@ class TestsService:
             updated_test, message = self.update_test(
                 test_id=actual_test_id,
                 name=name.strip() if name else None,
-                price=float(price) if price else None,
+                price=price if price not in (None, "") else None,
                 duration=int(duration) if duration else None,
                 instructions=actual_form_data.get("patient_instructions") or actual_form_data.get("instructions"),
                 description=actual_form_data.get("description"),
@@ -499,7 +576,7 @@ class TestsService:
                 alias_name=alias_raw,
                 sample_type=actual_form_data.get("sample_type"),
                 laboratory_id=int(laboratory_id) if laboratory_id else None,
-                city_id=int(city_id) if city_id else None,
+                city_prices=_collect_city_prices(actual_form_data),
             )
 
             if not updated_test:
@@ -513,7 +590,6 @@ class TestsService:
             logger.exception("handle_update_test failed for test_id=%r: %s", actual_test_id, e)
             return False, "حدث خطأ أثناء تحديث التحليل"
 
-    # Determine whether the incoming request expects JSON or was dispatched via AJAX
     def is_ajax_request(self, request):
         """True if the Flask request is JSON, XHR, or Accepts application/json."""
         return (
@@ -522,7 +598,6 @@ class TestsService:
             or "application/json" in request.headers.get("Accept", "")
         )
 
-    # Trigger generative AI model to synthesize medical test description, instructions, and keywords
     def process_ai_generation(self, request):
         """Generate test metadata (description/instructions/keywords) from the request's name. Returns (TestGenerationResult or None, error or None)."""
         try:
@@ -545,7 +620,6 @@ class TestsService:
             logger.exception("process_ai_generation failed: %s", e)
             return None, "حدث خطأ أثناء توليد بيانات التحليل بالذكاء الاصطناعي"
 
-    # Trigger generative AI model to regenerate alternative metadata for a medical test
     def process_ai_regeneration(self, request):
         """Regenerate alternative test metadata given the previous AI output in the request. Returns (TestGenerationResult or None, error or None)."""
         try:
@@ -577,7 +651,6 @@ class TestsService:
             logger.exception("process_ai_regeneration failed: %s", e)
             return None, "حدث خطأ أثناء إعادة توليد بيانات التحليل بالذكاء الاصطناعي"
 
-    # Format AI TestGenerationResult schema object into a JSON-compatible dictionary
     def format_ai_response(self, result):
         """Map a TestGenerationResult to the dict shape the dashboard form expects (dual keys for instructions/aliases)."""
         return {
@@ -593,14 +666,19 @@ class TestsService:
 
     @staticmethod
     def get_services_by_ids(service_ids: list):
-        """Fetch LabService instances by IDs."""
+        """Fetch LabService instances by IDs (city prices eager-loaded)."""
         if not service_ids:
             return []
         try:
             int_ids = [int(sid) for sid in service_ids if str(sid).isdigit()]
             if not int_ids:
                 return []
-            return LabService.query.filter(LabService.id.in_(int_ids)).all()
+            return (
+                LabService.query
+                .options(selectinload(LabService.city_prices))
+                .filter(LabService.id.in_(int_ids))
+                .all()
+            )
         except Exception as e:
             logger.exception("[TestsService.get_services_by_ids] Error: %s", e)
             return []
@@ -608,15 +686,14 @@ class TestsService:
     @staticmethod
     def get_total_tests_count(laboratory_id: int = None, city_id: int = None) -> int:
         """Fetch total count of lab services.
-        Pass laboratory_id and/or city_id to scope the count; omit both for a global count
-        (backward-compatible with dashboard_service which calls it without arguments).
-        """
+        Pass laboratory_id and/or city_id to scope the count (city = tests available in that city);
+        omit both for a global count."""
         try:
             query = LabService.query
             if laboratory_id:
                 query = query.filter(LabService.laboratory_id == laboratory_id)
             if city_id:
-                query = query.filter(LabService.city_id == city_id)
+                query = query.filter(_available_in_city(city_id))
             return query.count()
         except Exception:
             return 0

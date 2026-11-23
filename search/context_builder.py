@@ -42,7 +42,6 @@ def _normalize_queries(
     logger.info("✅ [CONTEXT BUILDER] Normalized queries count: %d", len(typed_queries))
     return typed_queries
 
-
 class ContextBuilder:
     """Build the RAG context used by downstream LLM nodes."""
 
@@ -53,7 +52,9 @@ class ContextBuilder:
         laboratory_id: int,
         city_id: int,
     ) -> str:
-        """Format search results and lab data into LLM-readable context."""
+        """Format search results and lab data into LLM-readable context.
+        The price is resolved per city; a test with no price for the city is
+        reported as unavailable there."""
         if not laboratory_id or not city_id:
             raise ValueError("laboratory_id and city_id are required for context formatting")
         city = City.query.filter_by(id=city_id, laboratory_id=laboratory_id).first()
@@ -77,10 +78,10 @@ class ContextBuilder:
                     result.id,
                 )
                 continue
-            if lab.laboratory_id != laboratory_id or lab.city_id != city_id:
+            if lab.laboratory_id != laboratory_id:
                 logger.warning(
-                    "Refusing out-of-scope test row in context | id=%s lab=%s city=%s",
-                    result.id, laboratory_id, city_id,
+                    "Refusing out-of-scope test row in context | id=%s lab=%s",
+                    result.id, laboratory_id,
                 )
                 continue
 
@@ -94,13 +95,29 @@ class ContextBuilder:
                 else "None"
             )
 
+            price = lab.get_price_for_city(city_id)
+            if price is None:
+                # Test exists but has no price in this city -> not available there
+                block = (
+                    f"--- Result #{idx} ---\n"
+                    f"Test ID: {lab.id}\n"
+                    f"Test Name: {lab.name}\n"
+                    f"Aliases: {aliases_text}\n"
+                    f"Availability: NOT available in {city.name}. "
+                    f"Do not quote a price for this test.\n"
+                    f"Match Confidence Score: {result.score:.2f}\n"
+                    f"Search Source: {result.source}"
+                )
+                context_blocks.append(block)
+                continue
+
             block = (
                 f"--- Result #{idx} ---\n"
                 f"Test ID: {lab.id}\n"
                 f"Test Name: {lab.name}\n"
                 f"Aliases: {aliases_text}\n"
                 f"Description: {lab.description or 'Not available'}\n"
-                f"Price: {lab.price:.2f} EGP\n"
+                f"Price in {city.name}: {price:.2f} EGP\n"
                 f"Duration: "
                 f"{lab.duration if lab.duration is not None else 'Not available'}\n"
                 f"Sample Type: {lab.sample_type or 'Not available'}\n"
@@ -133,6 +150,7 @@ class ContextBuilder:
         """
         Run the complete RAG search pipeline:
         Normalize Queries -> Search -> Fetch Lab Data -> Build Context.
+        city_id is only used to resolve prices and the region name.
         """
         if not laboratory_id or not city_id:
             raise ValueError("laboratory_id and city_id are required for RAG context")
@@ -147,10 +165,10 @@ class ContextBuilder:
             logger.warning("⚠️ [RAG PIPELINE] All queries failed normalization.")
             return "", [], 0.0
 
-        # 1. Run search
+        # 1. Run search (lab-wide)
         try:
             logger.info("🔎 [RAG PIPELINE] Running search across %d normalized queries...", len(typed_queries))
-            search_output = run_search(typed_queries, laboratory_id, city_id)
+            search_output = run_search(typed_queries, laboratory_id)
             results = search_output.get("results", [])
             top_score = search_output.get("top_score", 0.0)
             logger.info("🎯 [RAG PIPELINE] Search completed | raw_results=%d | top_score=%.4f", len(results), top_score)
@@ -171,12 +189,12 @@ class ContextBuilder:
                 0.0,
             )
 
-        # 2. Fetch complete lab records from database
+        # 2. Fetch complete lab records (with city prices eager-loaded)
         test_ids = list(dict.fromkeys(result.id for result in results))
         logger.info("📦 [RAG PIPELINE] Fetching DB records for unique test IDs: %s", test_ids)
 
         try:
-            lab_services = get_lab_services_by_ids(test_ids, laboratory_id, city_id)
+            lab_services = get_lab_services_by_ids(test_ids, laboratory_id)
             logger.info("✅ [RAG PIPELINE] Successfully fetched %d lab service records from DB.", len(lab_services))
         except Exception:
             logger.exception(

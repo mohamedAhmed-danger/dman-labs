@@ -6,6 +6,8 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from sqlalchemy.orm import selectinload
+
 from models.models import Inquiry, LabService, Status, db
 from services.messaging.client_service import ClientService
 from services.domain.page_service import PageService
@@ -203,11 +205,12 @@ class InquiryService:
             logger.exception("[InquiryService.update_status] Error")
             return InquiryResult(False, None, "حدث خطأ أثناء تحديث الحالة")
 
-    def _build_prescription_reply(self, services, discount_type=None):
+    def _build_prescription_reply(self, services, city_id, discount_type=None):
         """
         Build the doctor's confirmation reply text and a comma-separated
-        services list. Computes the total price across all selected services,
-        and applies an optional discount (general / insurance).
+        services list. Prices are resolved for the inquiry's city. A service
+        with no price in that city is listed as unavailable and is NOT
+        counted in the total. Applies an optional discount (general / insurance).
         """
         message_lines = [
             "📋 تمت مراجعة الروشتة الخاصة بك من قبل الطبيب.",
@@ -219,12 +222,21 @@ class InquiryService:
         service_names = []
 
         for s in services:
+            price = s.get_price_for_city(city_id)
+            if price is None:
+                message_lines.extend([
+                    f"▫️ {s.name}",
+                    "   • غير متاح في منطقتك حالياً",
+                    ""
+                ])
+                continue
+
             service_names.append(s.name)
-            total_price += float(s.price or 0)
+            total_price += float(price)
 
             message_lines.extend([
                 f"▫️ {s.name}",
-                f"   • السعر: {s.price} ج.م",
+                f"   • السعر: {price:g} ج.م",
                 f"   • العينة: {s.sample_type or 'غير محددة'}",
                 f"   • النتيجة خلال: {s.duration or 'غير محددة'}",
                 f"   • التعليمات: {s.patient_instructions or 'لا توجد تعليمات'}",
@@ -255,10 +267,11 @@ class InquiryService:
             return inquiry, None, "لا يمكن تأكيد الروشتة قبل تحديد منطقة العميل."
         clean_ids = [int(item) for item in selected_service_ids if str(item).isdigit()]
         selected_services = (
-            LabService.query.filter(
+            LabService.query
+            .options(selectinload(LabService.city_prices))
+            .filter(
                 LabService.id.in_(clean_ids),
                 LabService.laboratory_id == inquiry.laboratory_id,
-                LabService.city_id == inquiry.city_id,
             ).all()
             if clean_ids else []
         )
@@ -266,6 +279,8 @@ class InquiryService:
         selected_services = [by_id[item] for item in clean_ids if item in by_id]
         if not selected_services:
             return None, None, 'الخدمات المحددة غير صالحة.'
+        if all(s.get_price_for_city(inquiry.city_id) is None for s in selected_services):
+            return None, None, 'التحاليل المحددة غير متاحة في منطقة العميل.'
 
         return inquiry, selected_services, None
 
@@ -352,7 +367,9 @@ class InquiryService:
         if discount_type not in self.DISCOUNTS:
             discount_type = None
 
-        reply_text, services_mentioned = self._build_prescription_reply(selected_services, discount_type)
+        reply_text, services_mentioned = self._build_prescription_reply(
+            selected_services, inquiry.city_id, discount_type
+        )
         inquiry.services_mentioned = services_mentioned
         inquiry.status = Status.REVIEWED
 

@@ -1,0 +1,26 @@
+{% extends 'base.html' %}
+
+{% block title %}إضافة خصم جديد — معمل رعاية{% endblock %}
+{% block topbar_title %}إضافة خصم جديد{% endblock %}
+{% block topbar_sub %}حدد الاسم والقيمة والمدن اللي الخصم هيشتغل فيها{% endblock %}
+
+{% block content %}
+<div class="card" style="max-width: 800px; margin: 0 auto; padding: 2rem;">
+
+  <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1.5rem;">
+    <div style="background: var(--primary-light); color: var(--primary); padding: 0.85rem; border-radius: 12px; display: flex; align-items: center; justify-content: center;">
+      <i data-lucide="badge-percent" style="width: 28px; height: 28px;"></i>
+    </div>
+    <div>
+      <h3 style="margin: 0; font-size: 1.25rem; font-weight: 700;">بيانات الخصم</h3>
+      <p style="margin: 0.25rem 0 0 0; color: #64748b; font-size: 0.875rem;">هيتم استخدامها في النظام والذكاء الاصطناعي</p>
+    </div>
+  </div>
+
+  <hr style="border: 0; border-top: 1px solid #e2e8f0; margin-bottom: 1.5rem;">
+
+  {% set form_action = url_for('discount.add_discount') %}
+  {% set submit_label = 'حفظ الخصم' %}
+  {% include 'discounts/_form.html' %}
+</div>
+{% endblock %}

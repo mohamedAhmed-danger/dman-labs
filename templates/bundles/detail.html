@@ -1,6 +1,6 @@
 {% extends 'base.html' %}
 
-{% block title %}تعديل الباقة — معامل ضمان{% endblock %}
+{% block title %}تعديل الباقة — معمل رعاية{% endblock %}
 {% block topbar_title %}تعديل الباقة{% endblock %}
 {% block topbar_sub %}عدّل بيانات الباقة #{{ bundle.id }} ثم احفظ التغييرات{% endblock %}
 
@@ -8,12 +8,12 @@
 <div class="card" style="max-width: 800px; margin: 0 auto; padding: 2rem;">
 
   <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1.5rem;">
-    <div style="background: var(--brand-purple-50, #F0EDF4); color: var(--brand-purple-700, #411675); padding: 0.85rem; border-radius: 12px; display: flex; align-items: center; justify-content: center;">
+    <div style="background: var(--primary-light); color: var(--primary); padding: 0.85rem; border-radius: 12px; display: flex; align-items: center; justify-content: center;">
       <i data-lucide="edit-3" style="width: 28px; height: 28px;"></i>
     </div>
     <div>
       <h3 style="margin: 0; font-size: 1.25rem; font-weight: 700;">تعديل بيانات الباقة</h3>
-      <p style="margin: 0.25rem 0 0 0; color: #64748b; font-size: 0.875rem;">التعديلات هتظهر فورًا في النظام وفي ردود الذكاء الاصطناعي</p>
+      <p style="margin: 0.25rem 0 0 0; color: #64748b; font-size: 0.875rem;">التعديلات ستظهر فورًا في النظام وفي ردود الذكاء الاصطناعي</p>
     </div>
   </div>
 
@@ -32,11 +32,14 @@
 
     <div class="form-group" style="margin-bottom: 1.25rem;">
       <label class="form-label" style="font-weight: 600; margin-bottom: 0.5rem; display: block;">
-        سعر الباقة (بالجنيه) <span class="text-danger">*</span>
+        السعر الافتراضي (بالجنيه) (اختياري)
       </label>
-      <input type="number" step="1" min="0" name="price" class="form-control" required
-             value="{{ request.form.get('price', '%g'|format(bundle.price)) }}"
+      <input type="number" step="1" min="0" name="price" class="form-control"
+             value="{{ request.form.get('price', ('%g'|format(bundle.price)) if bundle.price is not none else '') }}"
              style="width: 100%; padding: 0.65rem 0.85rem; border: 1px solid #cbd5e1; border-radius: 8px;">
+      <div style="margin-top: 0.4rem; color: #64748b; font-size: 0.8rem;">
+        بيتستخدم في أي مدينة ملهاش سعر خاص.
+      </div>
     </div>
 
     <div class="form-group" style="margin-bottom: 1.25rem;">
@@ -54,7 +57,7 @@
       <textarea name="instructions" class="form-control" rows="4" placeholder="مثال: صيام 8 ساعات قبل التحليل..."
                 style="width: 100%; padding: 0.65rem 0.85rem; border: 1px solid #cbd5e1; border-radius: 8px; line-height: 1.6;">{{ request.form.get('instructions', bundle.instructions or '') }}</textarea>
       <div style="margin-top: 0.4rem; color: #64748b; font-size: 0.8rem;">
-        هتظهر للمريض مع تفاصيل الباقة وبيستخدمها الذكاء الاصطناعي في الرد.
+        ستظهر للمريض مع تفاصيل الباقة ويستخدمها الذكاء الاصطناعي في الرد.
       </div>
     </div>
 
@@ -69,5 +72,38 @@
     </div>
 
   </form>
+
+  <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 2rem 0 1.5rem;">
+
+  <div style="margin-bottom: 1rem;">
+    <h3 style="margin: 0; font-size: 1.1rem; font-weight: 700;">أسعار المدن</h3>
+    <p style="margin: 0.25rem 0 0 0; color: #64748b; font-size: 0.85rem;">
+      اكتب سعر الباقة في كل مدينة. سيب الخانة فاضية لو الباقة هتستخدم السعر الافتراضي.
+    </p>
+  </div>
+
+  <form method="POST" action="{{ url_for('bundle.save_city_prices', bundle_id=bundle.id) }}">
+    {% for city in cities %}
+    <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 0.75rem;">
+      <label style="flex: 0 0 160px; font-weight: 600; margin: 0;">{{ city.name }}</label>
+      <input type="number" step="1" min="0" name="city_price_{{ city.id }}"
+             value="{{ '%g'|format(city_prices[city.id]) if city.id in city_prices else '' }}"
+             placeholder="السعر الافتراضي"
+             class="form-control"
+             style="flex: 1; padding: 0.65rem 0.85rem; border: 1px solid #cbd5e1; border-radius: 8px;">
+      <span style="color: #64748b;">ج.م</span>
+    </div>
+    {% else %}
+    <p style="color: #64748b;">لا توجد مدن مضافة بعد.</p>
+    {% endfor %}
+
+    {% if cities %}
+    <button type="submit" class="btn btn-primary" style="padding: 0.65rem 1.5rem; font-weight: 600; display: flex; align-items: center; gap: 0.5rem; margin-top: 1rem;">
+      <i data-lucide="check"></i>
+      <span>حفظ أسعار المدن</span>
+    </button>
+    {% endif %}
+  </form>
+
 </div>
 {% endblock %}

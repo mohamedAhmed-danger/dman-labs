@@ -40,18 +40,16 @@ def _query_qdrant(
     query_vector: list,
     limit: int,
     laboratory_id: int,
-    city_id: int,
 ):
-    """Query Qdrant and return the matching points."""
+    """Query the laboratory's Qdrant collection and return the matching points."""
     client = get_qdrant_client()
     return client.query_points(
-        collection_name=get_collection_name(laboratory_id, city_id),
+        collection_name=get_collection_name(laboratory_id),
         query=query_vector,
         limit=limit,
         query_filter=Filter(
             must=[
                 FieldCondition(key="laboratory_id", match=MatchValue(value=laboratory_id)),
-                FieldCondition(key="city_id", match=MatchValue(value=city_id)),
             ]
         ),
     )
@@ -78,12 +76,11 @@ def semantic_search(
     limit: int = 3,
     *,
     laboratory_id: int,
-    city_id: int,
 ) -> List[SearchResult]:
     """Execute semantic vector search using Qdrant."""
 
-    if not laboratory_id or not city_id:
-        raise ValueError("laboratory_id and city_id are required for semantic search")
+    if not laboratory_id:
+        raise ValueError("laboratory_id is required for semantic search")
     if not query:
         return []
 
@@ -100,7 +97,6 @@ def semantic_search(
             query_vector,
             limit,
             laboratory_id,
-            city_id,
         )
 
         return _build_search_results(response)

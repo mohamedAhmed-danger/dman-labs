@@ -32,6 +32,7 @@ class AgentState(TypedDict, total=False):
     # =========================
     intent: Optional[IntentType]
     is_bundle_query: Optional[bool]
+    is_discount_query: Optional[bool]
 
     # =========================
     # RAG

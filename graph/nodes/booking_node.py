@@ -10,6 +10,7 @@ from schemas.booking import VisitReply
 from services.messaging.client_service import ClientService
 from services.domain.laboratory_service import LaboratoryService
 from services.domain.bundle_service import BundleService
+from services.domain.discount_service import DiscountService
 from utils.history_utils import get_chat_history
 from utils.llm_utils import extract_token_usage
 from utils.text_utils import detect_language_fallback, get_platform_name
@@ -48,14 +49,23 @@ def booking_node(state: AgentState) -> dict:
         state.get("is_bundle_query", False)
         or OFFER_FLYER_MARKER in user_message
     )
+    is_discount_query=(
+        state.get("is_discount_query",False)
+    )
 
     # 2. Fetch dynamic Lab Info & Bundles Context from DB
     lab_name, lab_location, lab_desc = LaboratoryService.get_current_lab_info()
 
     if is_bundle_query:
-        bundles_context = BundleService.get_bundles_formatted_context()
+        city_id = BundleService.get_client_city_id(platform_id, page_id, sender_id)
+        bundles_context = BundleService.get_bundles_formatted_context(city_id=city_id)
     else:
         bundles_context = "(No bundle context required for this request.)"
+    if is_discount_query:
+        city_id = DiscountService.get_client_city_id(platform_id, page_id, sender_id)
+        discount_context = DiscountService.get_discounts_formatted_context(city_id=city_id) 
+    else:
+        discount_context = "(No discount context required for this request.)"       
 
     # 3. Load recent conversation history
     client_service = ClientService(
@@ -88,6 +98,10 @@ AVAILABLE BUNDLES
 {bundles_context}
 
 ====================
+AVAILABLE DISCOUNTS
+====================
+{discount_context}
+
 CRITICAL: CURRENT TEMPORAL CONTEXT
 ====================
 {current_time}
